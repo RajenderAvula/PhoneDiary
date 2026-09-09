@@ -3,9 +3,8 @@ package com.example.phonediary.worker
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
-import com.example.phonediary.data.DiaryEntry
-import com.example.phonediary.network.ClaudeClient
 import com.example.phonediary.usage.UsageStatsCollector
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -21,23 +20,13 @@ class DiaryGenerationWorker(
             UsageStatsCollector(applicationContext).collectForToday()
 
             val db = AppDatabase.getInstance(applicationContext)
-            val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(System.currentTimeMillis())
+            val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                .format(System.currentTimeMillis())
 
             val entries = db.logEntryDao().getEntriesForDate(dateKey)
 
-            val apiKey = ApiKeyStore.getKey(applicationContext) ?: return Result.failure()
-            val api = ClaudeClient.create { apiKey }
-            val diaryText = ClaudeClient.generateDiaryText(api, dateKey, entries)
-
-            db.diaryEntryDao().upsert(
-                DiaryEntry(
-                    dateKey = dateKey,
-                    generatedText = diaryText,
-                    generatedAtMillis = System.currentTimeMillis()
-                )
-            )
-
-            Result.success()
+            val wrote = CalendarWriter.writeDayLog(applicationContext, dateKey, entries)
+            if (wrote) Result.success() else Result.retry()
         } catch (e: Exception) {
             Result.retry()
         }
