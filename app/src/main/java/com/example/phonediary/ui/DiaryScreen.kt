@@ -112,6 +112,7 @@ fun DiaryScreen() {
                                     note = noteText
                                 )
                             )
+                            CalendarWriter.refreshToday(context)
                             noteText = ""
                             refreshDates()
                             if (selectedDate == todayKey) openDate(todayKey)
