@@ -13,11 +13,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.phonediary.accessibility.BlockedAppsStore
+import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
-import com.example.phonediary.data.DiaryEntry
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.usage.UsageStatsCollector
-import com.example.phonediary.worker.ApiKeyStore
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -31,13 +31,11 @@ fun DiaryScreen() {
 
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
-    var selectedEntry by remember { mutableStateOf<DiaryEntry?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
     var noteText by remember { mutableStateOf("") }
-    var apiKeyInput by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
-    var isEditing by remember { mutableStateOf(false) }
-    var editText by remember { mutableStateOf("") }
+    var newBlockedPackage by remember { mutableStateOf("") }
+    var blockedApps by remember { mutableStateOf(setOf<String>()) }
 
     fun refreshDates() {
         scope.launch {
@@ -47,15 +45,15 @@ fun DiaryScreen() {
 
     fun openDate(dateKey: String) {
         selectedDate = dateKey
-        isEditing = false
         scope.launch {
-            val db = AppDatabase.getInstance(context)
-            selectedEntry = db.diaryEntryDao().getEntryForDate(dateKey)
-            dayLogEntries = db.logEntryDao().getEntriesForDate(dateKey)
+            dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
         }
     }
 
-    LaunchedEffect(Unit) { refreshDates() }
+    LaunchedEffect(Unit) {
+        refreshDates()
+        blockedApps = BlockedAppsStore.getBlockedPackages(context)
+    }
 
     Scaffold(
         topBar = {
@@ -74,14 +72,24 @@ fun DiaryScreen() {
             if (showSettings) {
                 SettingsPanel(
                     context = context,
-                    apiKeyInput = apiKeyInput,
-                    onApiKeyChange = { apiKeyInput = it },
-                    onSaveKey = { ApiKeyStore.saveKey(context, apiKeyInput) }
+                    blockedApps = blockedApps,
+                    newBlockedPackage = newBlockedPackage,
+                    onNewBlockedPackageChange = { newBlockedPackage = it },
+                    onAddBlocked = {
+                        if (newBlockedPackage.isNotBlank()) {
+                            BlockedAppsStore.addBlockedPackage(context, newBlockedPackage.trim())
+                            blockedApps = BlockedAppsStore.getBlockedPackages(context)
+                            newBlockedPackage = ""
+                        }
+                    },
+                    onRemoveBlocked = { pkg ->
+                        BlockedAppsStore.removeBlockedPackage(context, pkg)
+                        blockedApps = BlockedAppsStore.getBlockedPackages(context)
+                    }
                 )
                 Divider(modifier = Modifier.padding(vertical = 12.dp))
             }
 
-            // ---- Manual note entry ----
             Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
@@ -106,7 +114,6 @@ fun DiaryScreen() {
                             )
                             noteText = ""
                             refreshDates()
-                            // If we're currently viewing today, refresh the preview live.
                             if (selectedDate == todayKey) openDate(todayKey)
                         }
                     }
@@ -117,7 +124,6 @@ fun DiaryScreen() {
             Divider()
             Spacer(Modifier.height(16.dp))
 
-            // ---- Days list ----
             Text("Days logged", style = MaterialTheme.typography.titleMedium)
             LazyColumn(modifier = Modifier.heightIn(max = 180.dp)) {
                 items(dates) { date ->
@@ -134,7 +140,6 @@ fun DiaryScreen() {
                 Divider()
                 Spacer(Modifier.height(12.dp))
 
-                // ---- Preview of raw logged entries with timestamps ----
                 Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
                 if (dayLogEntries.isEmpty()) {
                     Text("No entries logged for this day yet.")
@@ -146,58 +151,22 @@ fun DiaryScreen() {
                                 val minutes = (entry.durationMillis ?: 0L) / 60000
                                 "${entry.appName} — ${minutes}m"
                             }
+                            "screen_content" -> "${entry.appName}${entry.note?.let { " — $it" } ?: ""}"
                             else -> entry.note ?: entry.source
                         }
                         Text("$time  •  $label", style = MaterialTheme.typography.bodySmall)
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
-
-                // ---- Diary text with edit support ----
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Diary entry", style = MaterialTheme.typography.titleMedium)
-                    if (selectedEntry != null && !isEditing) {
-                        TextButton(onClick = {
-                            editText = selectedEntry?.editedText ?: selectedEntry?.generatedText ?: ""
-                            isEditing = true
-                        }) { Text("Edit") }
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = {
+                    scope.launch {
+                        val wrote = CalendarWriter.writeDayLog(context, date, dayLogEntries)
+                        if (!wrote) {
+                            // Most likely missing permission or no calendar configured.
+                        }
                     }
-                }
-
-                if (isEditing) {
-                    OutlinedTextField(
-                        value = editText,
-                        onValueChange = { editText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 4
-                    )
-                    Row {
-                        Button(onClick = {
-                            scope.launch {
-                                val current = selectedEntry
-                                if (current != null) {
-                                    val updated = current.copy(editedText = editText)
-                                    AppDatabase.getInstance(context).diaryEntryDao().upsert(updated)
-                                    selectedEntry = updated
-                                }
-                                isEditing = false
-                            }
-                        }) { Text("Save changes") }
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { isEditing = false }) { Text("Cancel") }
-                    }
-                } else {
-                    Text(
-                        selectedEntry?.editedText
-                            ?: selectedEntry?.generatedText
-                            ?: "No diary generated yet for this day. It's created automatically each night."
-                    )
-                }
+                }) { Text("Send this day to Calendar") }
             }
         }
     }
@@ -206,11 +175,14 @@ fun DiaryScreen() {
 @Composable
 private fun SettingsPanel(
     context: Context,
-    apiKeyInput: String,
-    onApiKeyChange: (String) -> Unit,
-    onSaveKey: () -> Unit
+    blockedApps: Set<String>,
+    newBlockedPackage: String,
+    onNewBlockedPackageChange: (String) -> Unit,
+    onAddBlocked: () -> Unit,
+    onRemoveBlocked: (String) -> Unit
 ) {
     val hasUsagePermission = remember { UsageStatsCollector(context).hasUsagePermission() }
+    val hasCalendarPermission = remember { CalendarWriter.hasCalendarPermission(context) }
 
     Column {
         Text("Settings", style = MaterialTheme.typography.titleMedium)
@@ -223,13 +195,48 @@ private fun SettingsPanel(
             }) { Text("Grant usage access") }
         }
 
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = apiKeyInput,
-            onValueChange = onApiKeyChange,
-            label = { Text("Claude API key") },
-            placeholder = { Text("sk-ant-...") }
+        Spacer(Modifier.height(8.dp))
+        Text(if (hasCalendarPermission) "Calendar access: granted" else "Calendar access: not granted")
+        if (!hasCalendarPermission) {
+            Text(
+                "If not prompted automatically, grant it from the app's system settings page.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text("Screen-content logging (Accessibility)")
+        Button(onClick = {
+            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }) { Text("Open Accessibility settings") }
+        Text(
+            "Find 'Phone Diary' in the list and turn it on there.",
+            style = MaterialTheme.typography.bodySmall
         )
-        Button(onClick = onSaveKey) { Text("Save key") }
+
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Blocked apps (never logged)", style = MaterialTheme.typography.titleSmall)
+        blockedApps.forEach { pkg ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(pkg, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { onRemoveBlocked(pkg) }) { Text("Remove") }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = newBlockedPackage,
+                onValueChange = onNewBlockedPackageChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("e.g. com.bank.app") }
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = onAddBlocked) { Text("Block") }
+        }
     }
 }
