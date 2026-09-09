@@ -63,6 +63,7 @@ class UsageStatsCollector(private val context: Context) {
                 )
             )
         }
+        com.example.phonediary.calendar.CalendarWriter.refreshToday(context)
     }
 
     private fun startOfTodayMillis(): Long {
