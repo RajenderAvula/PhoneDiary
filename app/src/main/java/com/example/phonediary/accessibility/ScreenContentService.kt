@@ -39,7 +39,7 @@ class ScreenContentService : AccessibilityService() {
         // dialog title or screen heading). Falls back to just the package.
         val screenLabel = event.text?.joinToString(" ") { it.toString() }?.take(120)
 
-        scope.launch {
+    scope.launch {
             val dateKey = dateFormat.format(System.currentTimeMillis())
             AppDatabase.getInstance(applicationContext).logEntryDao().insert(
                 LogEntry(
@@ -50,7 +50,8 @@ class ScreenContentService : AccessibilityService() {
                     note = screenLabel
                 )
             )
-        }
+            com.example.phonediary.calendar.CalendarWriter.refreshToday(applicationContext)
+    }
     }
 
     override fun onInterrupt() {
