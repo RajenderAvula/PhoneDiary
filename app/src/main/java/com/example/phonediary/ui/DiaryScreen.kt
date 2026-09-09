@@ -36,6 +36,9 @@ fun DiaryScreen() {
     var showSettings by remember { mutableStateOf(false) }
     var newBlockedPackage by remember { mutableStateOf("") }
     var blockedApps by remember { mutableStateOf(setOf<String>()) }
+    var calendarStatus by remember { mutableStateOf<String?>(null) }
+    var editingEntryId by remember { mutableStateOf<Long?>(null) }
+    var editingEntryText by remember { mutableStateOf("") }
 
     fun refreshDates() {
         scope.launch {
@@ -45,8 +48,22 @@ fun DiaryScreen() {
 
     fun openDate(dateKey: String) {
         selectedDate = dateKey
+        calendarStatus = null
         scope.launch {
             dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
+        }
+    }
+
+    fun sendToCalendar(dateKey: String, entries: List<LogEntry>) {
+        scope.launch {
+            val wrote = CalendarWriter.writeDayLog(context, dateKey, entries)
+            calendarStatus = if (wrote) {
+                "Saved to Calendar ✓"
+            } else if (!CalendarWriter.hasCalendarPermission(context)) {
+                "Failed: Calendar permission not granted"
+            } else {
+                "Failed: no writable calendar found on this device"
+            }
         }
     }
 
@@ -126,7 +143,7 @@ fun DiaryScreen() {
             Spacer(Modifier.height(16.dp))
 
             Text("Days logged", style = MaterialTheme.typography.titleMedium)
-            LazyColumn(modifier = Modifier.heightIn(max = 180.dp)) {
+            LazyColumn(modifier = Modifier.heightIn(max = 160.dp)) {
                 items(dates) { date ->
                     ListItem(
                         headlineContent = { Text(date) },
@@ -147,7 +164,7 @@ fun DiaryScreen() {
                 } else {
                     dayLogEntries.forEach { entry ->
                         val time = timeFormat.format(entry.timestampMillis)
-                        val label = when (entry.source) {
+                        val displayLabel = when (entry.source) {
                             "app_usage" -> {
                                 val minutes = (entry.durationMillis ?: 0L) / 60000
                                 "${entry.appName} — ${minutes}m"
@@ -155,19 +172,61 @@ fun DiaryScreen() {
                             "screen_content" -> "${entry.appName}${entry.note?.let { " — $it" } ?: ""}"
                             else -> entry.note ?: entry.source
                         }
-                        Text("$time  •  $label", style = MaterialTheme.typography.bodySmall)
+
+                        if (editingEntryId == entry.id) {
+                            Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                OutlinedTextField(
+                                    value = editingEntryText,
+                                    onValueChange = { editingEntryText = it },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row {
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            val updated = entry.copy(note = editingEntryText)
+                                            AppDatabase.getInstance(context).logEntryDao().update(updated)
+                                            editingEntryId = null
+                                            openDate(date)
+                                            CalendarWriter.refreshToday(context)
+                                        }
+                                    }) { Text("Save") }
+                                    TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "$time  •  $displayLabel",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = {
+                                    editingEntryId = entry.id
+                                    editingEntryText = entry.note ?: entry.appName ?: ""
+                                }) { Text("Edit") }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        AppDatabase.getInstance(context).logEntryDao().delete(entry)
+                                        openDate(date)
+                                        CalendarWriter.refreshToday(context)
+                                    }
+                                }) { Text("Delete") }
+                            }
+                        }
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = {
-                    scope.launch {
-                        val wrote = CalendarWriter.writeDayLog(context, date, dayLogEntries)
-                        if (!wrote) {
-                            // Most likely missing permission or no calendar configured.
-                        }
-                    }
-                }) { Text("Send this day to Calendar") }
+                Button(onClick = { sendToCalendar(date, dayLogEntries) }) {
+                    Text("Send this day to Calendar")
+                }
+                calendarStatus?.let { status ->
+                    Text(status, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
@@ -198,12 +257,6 @@ private fun SettingsPanel(
 
         Spacer(Modifier.height(8.dp))
         Text(if (hasCalendarPermission) "Calendar access: granted" else "Calendar access: not granted")
-        if (!hasCalendarPermission) {
-            Text(
-                "If not prompted automatically, grant it from the app's system settings page.",
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
 
         Spacer(Modifier.height(8.dp))
         Text("Screen-content logging (Accessibility)")
