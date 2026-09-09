@@ -29,10 +29,16 @@ object CalendarWriter {
             PackageManager.PERMISSION_GRANTED
     }
 
-    private fun findWritableCalendarId(context: Context): Long? {
-        val projection = arrayOf(CalendarContract.Calendars._ID)
+private fun findWritableCalendarId(context: Context): Long? {
+        val projection = arrayOf(
+            CalendarContract.Calendars._ID,
+            CalendarContract.Calendars.ACCOUNT_TYPE
+        )
         val selection = "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ?"
         val selectionArgs = arrayOf(CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString())
+
+        var fallbackId: Long? = null
+        var chosenId: Long? = null
 
         context.contentResolver.query(
             CalendarContract.Calendars.CONTENT_URI,
@@ -41,8 +47,30 @@ object CalendarWriter {
             selectionArgs,
             null
         )?.use { cursor ->
-            if (cursor.moveToFirst()) return cursor.getLong(0)
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(0)
+                val accountType = cursor.getString(1)
+                if (fallbackId == null) fallbackId = id
+                if (accountType == "com.google" && chosenId == null) {
+                    chosenId = id
+                }
+            }
         }
+
+        val finalId = chosenId ?: fallbackId ?: createLocalCalendar(context)
+        finalId?.let { ensureCalendarVisible(context, it) }
+        return finalId
+    }
+
+    private fun ensureCalendarVisible(context: Context, calendarId: Long) {
+        val uri = ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, calendarId)
+        val values = ContentValues().apply {
+            put(CalendarContract.Calendars.VISIBLE, 1)
+            put(CalendarContract.Calendars.SYNC_EVENTS, 1)
+        }
+        context.contentResolver.update(uri, values, null, null)
+    }
+        
         return null
     }
 
