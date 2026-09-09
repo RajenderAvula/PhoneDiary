@@ -1,8 +1,10 @@
 package com.example.phonediary.data
 
 import androidx.room.Dao
+import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.Query
+import androidx.room.Update
 import androidx.room.Upsert
 
 @Dao
@@ -10,6 +12,12 @@ interface LogEntryDao {
 
     @Insert
     suspend fun insert(entry: LogEntry)
+
+    @Update
+    suspend fun update(entry: LogEntry)
+
+    @Delete
+    suspend fun delete(entry: LogEntry)
 
     @Query("SELECT * FROM log_entries WHERE dateKey = :dateKey ORDER BY timestampMillis ASC")
     suspend fun getEntriesForDate(dateKey: String): List<LogEntry>
