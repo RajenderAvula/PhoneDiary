@@ -27,13 +27,17 @@ import java.util.Locale
 fun DiaryScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var selectedEntry by remember { mutableStateOf<DiaryEntry?>(null) }
+    var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
     var noteText by remember { mutableStateOf("") }
     var apiKeyInput by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
+    var isEditing by remember { mutableStateOf(false) }
+    var editText by remember { mutableStateOf("") }
 
     fun refreshDates() {
         scope.launch {
@@ -43,8 +47,11 @@ fun DiaryScreen() {
 
     fun openDate(dateKey: String) {
         selectedDate = dateKey
+        isEditing = false
         scope.launch {
-            selectedEntry = AppDatabase.getInstance(context).diaryEntryDao().getEntryForDate(dateKey)
+            val db = AppDatabase.getInstance(context)
+            selectedEntry = db.diaryEntryDao().getEntryForDate(dateKey)
+            dayLogEntries = db.logEntryDao().getEntriesForDate(dateKey)
         }
     }
 
@@ -69,13 +76,12 @@ fun DiaryScreen() {
                     context = context,
                     apiKeyInput = apiKeyInput,
                     onApiKeyChange = { apiKeyInput = it },
-                    onSaveKey = {
-                        ApiKeyStore.saveKey(context, apiKeyInput)
-                    }
+                    onSaveKey = { ApiKeyStore.saveKey(context, apiKeyInput) }
                 )
                 Divider(modifier = Modifier.padding(vertical = 12.dp))
             }
 
+            // ---- Manual note entry ----
             Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
@@ -86,19 +92,23 @@ fun DiaryScreen() {
                 )
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = {
-                    scope.launch {
-                        val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                            .format(System.currentTimeMillis())
-                        AppDatabase.getInstance(context).logEntryDao().insert(
-                            LogEntry(
-                                timestampMillis = System.currentTimeMillis(),
-                                dateKey = todayKey,
-                                source = "manual_note",
-                                note = noteText
+                    if (noteText.isNotBlank()) {
+                        scope.launch {
+                            val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                                .format(System.currentTimeMillis())
+                            AppDatabase.getInstance(context).logEntryDao().insert(
+                                LogEntry(
+                                    timestampMillis = System.currentTimeMillis(),
+                                    dateKey = todayKey,
+                                    source = "manual_note",
+                                    note = noteText
+                                )
                             )
-                        )
-                        noteText = ""
-                        refreshDates()
+                            noteText = ""
+                            refreshDates()
+                            // If we're currently viewing today, refresh the preview live.
+                            if (selectedDate == todayKey) openDate(todayKey)
+                        }
                     }
                 }) { Text("Save") }
             }
@@ -107,8 +117,9 @@ fun DiaryScreen() {
             Divider()
             Spacer(Modifier.height(16.dp))
 
+            // ---- Days list ----
             Text("Days logged", style = MaterialTheme.typography.titleMedium)
-            LazyColumn(modifier = Modifier.weight(1f)) {
+            LazyColumn(modifier = Modifier.heightIn(max = 180.dp)) {
                 items(dates) { date ->
                     ListItem(
                         headlineContent = { Text(date) },
@@ -119,13 +130,74 @@ fun DiaryScreen() {
             }
 
             selectedDate?.let { date ->
+                Spacer(Modifier.height(16.dp))
+                Divider()
                 Spacer(Modifier.height(12.dp))
-                Text("Diary — $date", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    selectedEntry?.editedText
-                        ?: selectedEntry?.generatedText
-                        ?: "No diary generated yet for this day. It's created automatically each night."
-                )
+
+                // ---- Preview of raw logged entries with timestamps ----
+                Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
+                if (dayLogEntries.isEmpty()) {
+                    Text("No entries logged for this day yet.")
+                } else {
+                    dayLogEntries.forEach { entry ->
+                        val time = timeFormat.format(entry.timestampMillis)
+                        val label = when (entry.source) {
+                            "app_usage" -> {
+                                val minutes = (entry.durationMillis ?: 0L) / 60000
+                                "${entry.appName} — ${minutes}m"
+                            }
+                            else -> entry.note ?: entry.source
+                        }
+                        Text("$time  •  $label", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // ---- Diary text with edit support ----
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Diary entry", style = MaterialTheme.typography.titleMedium)
+                    if (selectedEntry != null && !isEditing) {
+                        TextButton(onClick = {
+                            editText = selectedEntry?.editedText ?: selectedEntry?.generatedText ?: ""
+                            isEditing = true
+                        }) { Text("Edit") }
+                    }
+                }
+
+                if (isEditing) {
+                    OutlinedTextField(
+                        value = editText,
+                        onValueChange = { editText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 4
+                    )
+                    Row {
+                        Button(onClick = {
+                            scope.launch {
+                                val current = selectedEntry
+                                if (current != null) {
+                                    val updated = current.copy(editedText = editText)
+                                    AppDatabase.getInstance(context).diaryEntryDao().upsert(updated)
+                                    selectedEntry = updated
+                                }
+                                isEditing = false
+                            }
+                        }) { Text("Save changes") }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { isEditing = false }) { Text("Cancel") }
+                    }
+                } else {
+                    Text(
+                        selectedEntry?.editedText
+                            ?: selectedEntry?.generatedText
+                            ?: "No diary generated yet for this day. It's created automatically each night."
+                    )
+                }
             }
         }
     }
