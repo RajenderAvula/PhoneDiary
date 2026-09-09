@@ -34,12 +34,11 @@ class DiaryGenerationWorker(
 
     companion object {
         const val WORK_NAME = "nightly_diary_generation"
-
         fun schedule(context: Context) {
+            // WorkManager enforces a 15-minute minimum for periodic work.
             val request = androidx.work.PeriodicWorkRequestBuilder<DiaryGenerationWorker>(
-                24, TimeUnit.HOURS
-            ).setInitialDelay(computeInitialDelayMillis(), TimeUnit.MILLISECONDS)
-                .build()
+                15, TimeUnit.MINUTES
+            ).build()
 
             androidx.work.WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
