@@ -3,6 +3,8 @@ package com.example.phonediary.ui
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,6 +21,7 @@ import com.example.phonediary.accessibility.BlockedAppsStore
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.LogEntry
+import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -35,12 +38,25 @@ fun DiaryScreen() {
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
     var noteText by remember { mutableStateOf("") }
+    var locationText by remember { mutableStateOf("") }
+    var pendingAttachmentName by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var newBlockedPackage by remember { mutableStateOf("") }
     var blockedApps by remember { mutableStateOf(setOf<String>()) }
     var calendarStatus by remember { mutableStateOf<String?>(null) }
     var editingEntryId by remember { mutableStateOf<Long?>(null) }
     var editingEntryText by remember { mutableStateOf("") }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val savedName = FileAttachmentHelper.copyToDownloads(context, uri)
+                pendingAttachmentName = savedName
+            }
+        }
+    }
 
     fun refreshDates() {
         scope.launch {
@@ -115,37 +131,61 @@ fun DiaryScreen() {
             }
 
             Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
-            Row(verticalAlignment = Alignment.Top) {
-                OutlinedTextField(
-                    value = noteText,
-                    onValueChange = { noteText = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("What are you doing?") },
-                    minLines = 1,
-                    maxLines = 6
-                )
+            OutlinedTextField(
+                value = noteText,
+                onValueChange = { noteText = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("What are you doing?") },
+                minLines = 1,
+                maxLines = 6
+            )
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = locationText,
+                onValueChange = { locationText = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Location URL (optional, e.g. maps link)") },
+                singleLine = true
+            )
+
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
+                    Text("Attach file")
+                }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = {
-                    if (noteText.isNotBlank()) {
-                        scope.launch {
-                            val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                                .format(System.currentTimeMillis())
-                            AppDatabase.getInstance(context).logEntryDao().insert(
-                                LogEntry(
-                                    timestampMillis = System.currentTimeMillis(),
-                                    dateKey = todayKey,
-                                    source = "manual_note",
-                                    note = noteText
-                                )
-                            )
-                            CalendarWriter.refreshToday(context)
-                            noteText = ""
-                            refreshDates()
-                            if (selectedDate == todayKey) openDate(todayKey)
-                        }
-                    }
-                }) { Text("Save") }
+                pendingAttachmentName?.let { name ->
+                    Text(name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { pendingAttachmentName = null }) { Text("✕") }
+                }
             }
+
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = {
+                if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachmentName != null) {
+                    scope.launch {
+                        val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                            .format(System.currentTimeMillis())
+                        AppDatabase.getInstance(context).logEntryDao().insert(
+                            LogEntry(
+                                timestampMillis = System.currentTimeMillis(),
+                                dateKey = todayKey,
+                                source = "manual_note",
+                                note = noteText.ifBlank { null },
+                                locationUrl = locationText.ifBlank { null },
+                                attachmentFileName = pendingAttachmentName
+                            )
+                        )
+                        CalendarWriter.refreshToday(context)
+                        noteText = ""
+                        locationText = ""
+                        pendingAttachmentName = null
+                        refreshDates()
+                        if (selectedDate == todayKey) openDate(todayKey)
+                    }
+                }
+            }) { Text("Save entry") }
 
             Spacer(Modifier.height(16.dp))
             Divider()
@@ -205,27 +245,35 @@ fun DiaryScreen() {
                                 }
                             }
                         } else {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "$time  •  $displayLabel",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                TextButton(onClick = {
-                                    editingEntryId = entry.id
-                                    editingEntryText = entry.note ?: entry.appName ?: ""
-                                }) { Text("Edit") }
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        AppDatabase.getInstance(context).logEntryDao().delete(entry)
-                                        openDate(date)
-                                        CalendarWriter.refreshToday(context)
-                                    }
-                                }) { Text("Delete") }
+                            Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "$time  •  $displayLabel",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = {
+                                        editingEntryId = entry.id
+                                        editingEntryText = entry.note ?: entry.appName ?: ""
+                                    }) { Text("Edit") }
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            AppDatabase.getInstance(context).logEntryDao().delete(entry)
+                                            openDate(date)
+                                            CalendarWriter.refreshToday(context)
+                                        }
+                                    }) { Text("Delete") }
+                                }
+                                entry.locationUrl?.let {
+                                    Text("📍 $it", style = MaterialTheme.typography.bodySmall)
+                                }
+                                entry.attachmentFileName?.let {
+                                    Text("📎 $it", style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
