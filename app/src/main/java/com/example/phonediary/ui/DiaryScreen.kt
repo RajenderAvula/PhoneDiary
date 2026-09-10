@@ -9,17 +9,18 @@ import android.provider.Settings
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.accessibility.BlockedAppsStore
 import com.example.phonediary.calendar.CalendarWriter
@@ -29,6 +30,8 @@ import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -234,16 +237,12 @@ fun DiaryScreen() {
             Divider()
             Spacer(Modifier.height(16.dp))
 
-            Text("Days logged", style = MaterialTheme.typography.titleMedium)
-            LazyColumn(modifier = Modifier.heightIn(max = 160.dp)) {
-                items(dates) { date ->
-                    ListItem(
-                        headlineContent = { Text(date) },
-                        modifier = Modifier.clickable { openDate(date) }
-                    )
-                    Divider()
-                }
-            }
+            Text("Calendar", style = MaterialTheme.typography.titleMedium)
+            CalendarMonthView(
+                loggedDates = dates.toSet(),
+                selectedDate = selectedDate,
+                onDayClick = { dateKey -> openDate(dateKey) }
+            )
 
             selectedDate?.let { date ->
                 Spacer(Modifier.height(16.dp))
@@ -329,11 +328,100 @@ fun DiaryScreen() {
                     }
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick = { openCalendarApp() }) {
-                        Text("Open Calendar")
+                        Text("Open Calendar app")
                     }
                 }
                 calendarStatus?.let { status ->
                     Text(status, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarMonthView(
+    loggedDates: Set<String>,
+    selectedDate: String?,
+    onDayClick: (String) -> Unit
+) {
+    var currentMonth by remember { mutableStateOf(YearMonth.now()) }
+    val dateKeyFormatter = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd") }
+
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = { currentMonth = currentMonth.minusMonths(1) }) { Text("◀") }
+            val monthName = currentMonth.month.name.lowercase()
+                .replaceFirstChar { it.uppercase() }
+            Text("$monthName ${currentMonth.year}", style = MaterialTheme.typography.titleSmall)
+            TextButton(onClick = { currentMonth = currentMonth.plusMonths(1) }) { Text("▶") }
+        }
+
+        Row(modifier = Modifier.fillMaxWidth()) {
+            listOf("S", "M", "T", "W", "T", "F", "S").forEach { label ->
+                Text(
+                    label,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        val firstDay = currentMonth.atDay(1)
+        val daysInMonth = currentMonth.lengthOfMonth()
+        val startOffset = firstDay.dayOfWeek.value % 7 // Sunday = 0
+        val totalCells = startOffset + daysInMonth
+        val rows = (totalCells + 6) / 7
+
+        for (row in 0 until rows) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                for (col in 0 until 7) {
+                    val cellIndex = row * 7 + col
+                    val dayNum = cellIndex - startOffset + 1
+                    if (dayNum in 1..daysInMonth) {
+                        val date = currentMonth.atDay(dayNum)
+                        val dateKey = date.format(dateKeyFormatter)
+                        val hasEntry = loggedDates.contains(dateKey)
+                        val isSelected = dateKey == selectedDate
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                                .clickable { onDayClick(dateKey) }
+                                .then(
+                                    if (isSelected) {
+                                        Modifier.background(
+                                            MaterialTheme.colorScheme.primaryContainer,
+                                            shape = CircleShape
+                                        )
+                                    } else Modifier
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(dayNum.toString(), style = MaterialTheme.typography.bodySmall)
+                                if (hasEntry) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(4.dp)
+                                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Spacer(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                        )
+                    }
                 }
             }
         }
