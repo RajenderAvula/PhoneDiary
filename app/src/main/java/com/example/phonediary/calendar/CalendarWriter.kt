@@ -110,9 +110,9 @@ object CalendarWriter {
 
     private fun formatLogLines(entries: List<LogEntry>): String {
         val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-        return entries.joinToString("\n") { entry ->
+        return entries.joinToString("\n\n") { entry ->
             val time = timeFormat.format(entry.timestampMillis)
-            when (entry.source) {
+            val baseLine = when (entry.source) {
                 "app_usage" -> {
                     val minutes = (entry.durationMillis ?: 0L) / 60000
                     "$time - used ${entry.appName} for ${minutes}m"
@@ -122,6 +122,13 @@ object CalendarWriter {
                 "calendar" -> "$time - event: ${entry.note}"
                 else -> "$time - ${entry.source}: ${entry.note ?: entry.appName ?: ""}"
             }
+
+            val extras = buildList {
+                entry.locationUrl?.takeIf { it.isNotBlank() }?.let { add("Location: $it") }
+                entry.attachmentFileName?.let { add("Attachment: $it (in Downloads/PhoneDiary)") }
+            }
+
+            if (extras.isEmpty()) baseLine else baseLine + "\n" + extras.joinToString("\n") { "   $it" }
         }
     }
 
