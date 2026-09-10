@@ -9,19 +9,12 @@ import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
 
-/**
- * Copies a user-picked file (any format) into Downloads/PhoneDiary so it's
- * easy to find later. Returns the display name saved, or null on failure.
- *
- * Uses MediaStore on Android 10+ (required by scoped storage) and direct
- * file access as a fallback on older versions.
- */
 object FileAttachmentHelper {
 
     private const val SUBFOLDER = "PhoneDiary"
 
-    fun copyToDownloads(context: Context, sourceUri: Uri): String? {
-        val displayName = queryDisplayName(context, sourceUri) ?: "attachment_${System.currentTimeMillis()}"
+    fun copyToDownloads(context: Context, sourceUri: Uri, forcedName: String? = null): String? {
+        val displayName = forcedName ?: queryDisplayName(context, sourceUri) ?: "attachment_${System.currentTimeMillis()}"
 
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
