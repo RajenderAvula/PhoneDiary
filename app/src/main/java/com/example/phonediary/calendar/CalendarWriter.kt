@@ -14,13 +14,10 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 
-/**
- * Writes/updates a day's raw log entries into the device's built-in
- * Calendar app as a single all-day event. Called immediately after every
- * new log entry, so the event is kept up to date in near real-time
- * instead of waiting for a nightly batch job.
- */
 object CalendarWriter {
+
+    private const val LOCAL_ACCOUNT_NAME = "Phone Diary"
+    private const val LOCAL_CALENDAR_NAME = "Phone Diary Local"
 
     fun hasCalendarPermission(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
@@ -29,7 +26,7 @@ object CalendarWriter {
             PackageManager.PERMISSION_GRANTED
     }
 
-private fun findWritableCalendarId(context: Context): Long? {
+    private fun findWritableCalendarId(context: Context): Long? {
         val projection = arrayOf(
             CalendarContract.Calendars._ID,
             CalendarContract.Calendars.ACCOUNT_TYPE
@@ -70,11 +67,30 @@ private fun findWritableCalendarId(context: Context): Long? {
         }
         context.contentResolver.update(uri, values, null, null)
     }
-        
-        return null
+
+    private fun createLocalCalendar(context: Context): Long? {
+        val uri = CalendarContract.Calendars.CONTENT_URI.buildUpon()
+            .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
+            .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_NAME, LOCAL_ACCOUNT_NAME)
+            .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
+            .build()
+
+        val values = ContentValues().apply {
+            put(CalendarContract.Calendars.ACCOUNT_NAME, LOCAL_ACCOUNT_NAME)
+            put(CalendarContract.Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
+            put(CalendarContract.Calendars.NAME, LOCAL_CALENDAR_NAME)
+            put(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME, LOCAL_CALENDAR_NAME)
+            put(CalendarContract.Calendars.CALENDAR_COLOR, -0xb350b0)
+            put(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL, CalendarContract.Calendars.CAL_ACCESS_OWNER)
+            put(CalendarContract.Calendars.OWNER_ACCOUNT, LOCAL_ACCOUNT_NAME)
+            put(CalendarContract.Calendars.VISIBLE, 1)
+            put(CalendarContract.Calendars.SYNC_EVENTS, 1)
+        }
+
+        val resultUri = context.contentResolver.insert(uri, values) ?: return null
+        return resultUri.lastPathSegment?.toLongOrNull()
     }
 
-    /** Finds today's already-created "Phone Diary - <date>" event, if any. */
     private fun findExistingEventId(context: Context, calendarId: Long, title: String): Long? {
         val projection = arrayOf(CalendarContract.Events._ID)
         val selection = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.TITLE} = ?"
@@ -109,11 +125,6 @@ private fun findWritableCalendarId(context: Context): Long? {
         }
     }
 
-    /**
-     * Creates the day's event if it doesn't exist yet, or updates its
-     * description in place if it does — so repeated calls throughout the
-     * day refresh the same event instead of creating duplicates.
-     */
     fun writeDayLog(context: Context, dateKey: String, entries: List<LogEntry>): Boolean {
         if (!hasCalendarPermission(context)) return false
         if (entries.isEmpty()) return false
@@ -152,11 +163,6 @@ private fun findWritableCalendarId(context: Context): Long? {
         }
     }
 
-    /**
-     * Convenience: pulls all of today's entries from the DB and pushes an
-     * updated calendar event immediately. Call this right after logging
-     * any new entry (manual note, screen content, app usage).
-     */
     suspend fun refreshToday(context: Context) {
         val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
             .format(System.currentTimeMillis())
