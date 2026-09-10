@@ -31,6 +31,8 @@ import com.example.phonediary.data.AttachmentListUtil
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
+import com.example.phonediary.files.MediaResolveUtil
+import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
@@ -52,7 +54,7 @@ fun DiaryScreen() {
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
     var noteText by remember { mutableStateOf("") }
     var locationText by remember { mutableStateOf("") }
-    var pendingAttachments by remember { mutableStateOf(listOf<String>()) }
+    var pendingAttachments by remember { mutableStateOf(listOf<SavedAttachment>()) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
@@ -71,10 +73,8 @@ fun DiaryScreen() {
     ) { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
-                val savedNames = uris.mapNotNull { uri ->
-                    FileAttachmentHelper.copyToDownloads(context, uri)
-                }
-                pendingAttachments = pendingAttachments + savedNames
+                val saved = uris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
+                pendingAttachments = pendingAttachments + saved
             }
         }
     }
@@ -96,8 +96,10 @@ fun DiaryScreen() {
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            pendingVideoName?.let { name ->
-                pendingAttachments = pendingAttachments + name
+            val uri = pendingVideoUri
+            val name = pendingVideoName
+            if (uri != null && name != null) {
+                pendingAttachments = pendingAttachments + SavedAttachment(name, uri)
             }
         }
         pendingVideoUri = null
@@ -117,10 +119,10 @@ fun DiaryScreen() {
 
     fun toggleAudioRecording() {
         if (isRecordingAudio) {
-            val savedName = audioRecorder.stopRecordingAndSave()
+            val saved = audioRecorder.stopRecordingAndSave()
             isRecordingAudio = false
-            if (savedName != null) {
-                pendingAttachments = pendingAttachments + savedName
+            if (saved != null) {
+                pendingAttachments = pendingAttachments + saved
             }
         } else {
             try {
@@ -269,13 +271,14 @@ fun DiaryScreen() {
             if (pendingAttachments.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 Text("Attachments to save:", style = MaterialTheme.typography.bodySmall)
-                pendingAttachments.forEach { name ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("• $name", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                        TextButton(onClick = {
-                            pendingAttachments = pendingAttachments.filterNot { it == name }
-                        }) { Text("✕") }
-                    }
+                pendingAttachments.forEach { attachment ->
+                    AttachmentPreview(
+                        name = attachment.name,
+                        uri = attachment.uri,
+                        onRemove = {
+                            pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name }
+                        }
+                    )
                 }
             }
 
@@ -292,7 +295,7 @@ fun DiaryScreen() {
                                 source = "manual_note",
                                 note = noteText.ifBlank { null },
                                 locationUrl = locationText.ifBlank { null },
-                                attachmentFileName = AttachmentListUtil.toStored(pendingAttachments)
+                                attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name })
                             )
                         )
                         CalendarWriter.refreshToday(context)
@@ -360,12 +363,17 @@ fun DiaryScreen() {
                                     Text("None", style = MaterialTheme.typography.bodySmall)
                                 } else {
                                     editingAttachments.forEach { name ->
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text("• $name", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                                            TextButton(onClick = {
-                                                editingAttachments = editingAttachments.filterNot { it == name }
-                                            }) { Text("Remove") }
+                                        var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
+                                        LaunchedEffect(name) {
+                                            resolvedUri = MediaResolveUtil.resolve(context, name)
                                         }
+                                        AttachmentPreview(
+                                            name = name,
+                                            uri = resolvedUri,
+                                            onRemove = {
+                                                editingAttachments = editingAttachments.filterNot { it == name }
+                                            }
+                                        )
                                     }
                                 }
                                 Row {
@@ -415,7 +423,11 @@ fun DiaryScreen() {
                                     Text("📍 $it", style = MaterialTheme.typography.bodySmall)
                                 }
                                 AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
-                                    Text("📎 $name", style = MaterialTheme.typography.bodySmall)
+                                    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
+                                    LaunchedEffect(name) {
+                                        resolvedUri = MediaResolveUtil.resolve(context, name)
+                                    }
+                                    AttachmentPreview(name = name, uri = resolvedUri)
                                 }
                             }
                         }
