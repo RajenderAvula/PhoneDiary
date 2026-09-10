@@ -1,5 +1,6 @@
 package com.example.phonediary.ui
-
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
@@ -84,7 +85,12 @@ fun DiaryScreen() {
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
 
             if (showSettings) {
                 SettingsPanel(
