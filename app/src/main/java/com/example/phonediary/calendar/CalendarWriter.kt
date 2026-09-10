@@ -124,7 +124,9 @@ object CalendarWriter {
 
             val extras = buildList {
                 entry.locationUrl?.takeIf { it.isNotBlank() }?.let { add("Location: $it") }
-                entry.attachmentFileName?.let { add("Attachment: $it (in Downloads/PhoneDiary)") }
+                com.example.phonediary.data.AttachmentListUtil.toList(entry.attachmentFileName).forEach {
+                    add("Attachment: $it (in Downloads/PhoneDiary or Movies/PhoneDiary)")
+                }
             }
 
             if (extras.isEmpty()) baseLine else baseLine + "\n" + extras.joinToString("\n") { "   $it" }
