@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.provider.CalendarContract
 import androidx.core.content.ContextCompat
@@ -17,6 +18,8 @@ object CalendarWriter {
 
     private const val LOCAL_ACCOUNT_NAME = "Phone Diary"
     private const val LOCAL_CALENDAR_NAME = "Phone Diary Local"
+    private const val PREFS_NAME = "phone_diary_calendar_prefs"
+    private const val KEY_PINNED_CALENDAR_ID = "pinned_calendar_id"
 
     fun hasCalendarPermission(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
@@ -25,7 +28,39 @@ object CalendarWriter {
             PackageManager.PERMISSION_GRANTED
     }
 
+    private fun prefs(context: Context): SharedPreferences =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    /**
+     * Returns the calendar we should write to, PINNED once chosen so it
+     * never silently flips between calendars on later calls (which was
+     * causing "missing" entries — they weren't deleted, they were written
+     * to a different calendar than the one being viewed).
+     */
     private fun findWritableCalendarId(context: Context): Long? {
+        val pinnedId = prefs(context).getLong(KEY_PINNED_CALENDAR_ID, -1L)
+        if (pinnedId != -1L && calendarStillExists(context, pinnedId)) {
+            ensureCalendarVisible(context, pinnedId)
+            return pinnedId
+        }
+
+        // No valid pinned calendar yet — pick one now and pin it permanently.
+        val chosen = pickCalendar(context) ?: return null
+        prefs(context).edit().putLong(KEY_PINNED_CALENDAR_ID, chosen).apply()
+        ensureCalendarVisible(context, chosen)
+        return chosen
+    }
+
+    private fun calendarStillExists(context: Context, calendarId: Long): Boolean {
+        context.contentResolver.query(
+            ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, calendarId),
+            arrayOf(CalendarContract.Calendars._ID),
+            null, null, null
+        )?.use { cursor -> return cursor.moveToFirst() }
+        return false
+    }
+
+    private fun pickCalendar(context: Context): Long? {
         val projection = arrayOf(
             CalendarContract.Calendars._ID,
             CalendarContract.Calendars.ACCOUNT_TYPE
@@ -38,24 +73,17 @@ object CalendarWriter {
 
         context.contentResolver.query(
             CalendarContract.Calendars.CONTENT_URI,
-            projection,
-            selection,
-            selectionArgs,
-            null
+            projection, selection, selectionArgs, null
         )?.use { cursor ->
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(0)
                 val accountType = cursor.getString(1)
                 if (fallbackId == null) fallbackId = id
-                if (accountType == "com.google" && chosenId == null) {
-                    chosenId = id
-                }
+                if (accountType == "com.google" && chosenId == null) chosenId = id
             }
         }
 
-        val finalId = chosenId ?: fallbackId ?: createLocalCalendar(context)
-        finalId?.let { ensureCalendarVisible(context, it) }
-        return finalId
+        return chosenId ?: fallbackId ?: createLocalCalendar(context)
     }
 
     private fun ensureCalendarVisible(context: Context, calendarId: Long) {
@@ -96,11 +124,7 @@ object CalendarWriter {
         val selectionArgs = arrayOf(calendarId.toString(), title)
 
         context.contentResolver.query(
-            CalendarContract.Events.CONTENT_URI,
-            projection,
-            selection,
-            selectionArgs,
-            null
+            CalendarContract.Events.CONTENT_URI, projection, selection, selectionArgs, null
         )?.use { cursor ->
             if (cursor.moveToFirst()) return cursor.getLong(0)
         }
@@ -133,15 +157,27 @@ object CalendarWriter {
         }
     }
 
+    /**
+     * Writes/updates the given day's event ONLY — never touches any other
+     * day's event. If entries is empty, the existing event for that day
+     * (if any) is deleted, since an empty day shouldn't show a stale event.
+     */
     fun writeDayLog(context: Context, dateKey: String, entries: List<LogEntry>): Boolean {
         if (!hasCalendarPermission(context)) return false
-        if (entries.isEmpty()) return false
 
         val calendarId = findWritableCalendarId(context) ?: return false
         val title = "Phone Diary - $dateKey"
+        val existingEventId = findExistingEventId(context, calendarId, title)
 
-        // All-day events MUST be expressed in UTC midnight, or sync adapters
-        // (like Google's) can shift the displayed date by a day or drop it.
+        if (entries.isEmpty()) {
+            // Nothing left to show for this day — remove the now-stale event, if any.
+            if (existingEventId != null) {
+                val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, existingEventId)
+                context.contentResolver.delete(uri, null, null)
+            }
+            return true
+        }
+
         val utcFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
         utcFormat.timeZone = TimeZone.getTimeZone("UTC")
         val startMillis = utcFormat.parse(dateKey)?.time ?: return false
@@ -157,8 +193,6 @@ object CalendarWriter {
             put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
         }
 
-        val existingEventId = findExistingEventId(context, calendarId, title)
-
         return if (existingEventId != null) {
             val updateUri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, existingEventId)
             context.contentResolver.update(updateUri, values, null, null) > 0
@@ -167,14 +201,18 @@ object CalendarWriter {
         }
     }
 
-    suspend fun refreshToday(context: Context) {
-        val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-            .format(System.currentTimeMillis())
+    /** Refreshes the calendar event for a SPECIFIC date — use this, not refreshToday, when editing a past day. */
+    suspend fun refreshDate(context: Context, dateKey: String) {
         val entries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
         writeDayLog(context, dateKey, entries)
     }
 
-    /** For diagnostics: returns the display name of whichever calendar we'd write into. */
+    suspend fun refreshToday(context: Context) {
+        val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            .format(System.currentTimeMillis())
+        refreshDate(context, dateKey)
+    }
+
     fun getTargetCalendarInfo(context: Context): String {
         val id = findWritableCalendarId(context) ?: return "No writable calendar found"
 
