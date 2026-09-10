@@ -11,5 +11,7 @@ data class LogEntry(
     val source: String,
     val appName: String? = null,
     val durationMillis: Long? = null,
-    val note: String? = null
+    val note: String? = null,
+    val locationUrl: String? = null,
+    val attachmentFileName: String? = null
 )
