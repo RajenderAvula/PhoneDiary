@@ -1,8 +1,10 @@
 package com.example.phonediary.ui
 
 import android.app.Activity
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.provider.CalendarContract
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -109,6 +111,13 @@ fun DiaryScreen() {
                 "Failed: no writable calendar found on this device"
             }
         }
+    }
+
+    fun openCalendarApp() {
+        val builder = CalendarContract.CONTENT_URI.buildUpon().appendPath("time")
+        ContentUris.appendId(builder, System.currentTimeMillis())
+        val intent = Intent(Intent.ACTION_VIEW).setData(builder.build())
+        context.startActivity(intent)
     }
 
     LaunchedEffect(Unit) {
@@ -312,8 +321,14 @@ fun DiaryScreen() {
                 }
 
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = { sendToCalendar(date, dayLogEntries) }) {
-                    Text("Send this day to Calendar")
+                Row {
+                    Button(onClick = { sendToCalendar(date, dayLogEntries) }) {
+                        Text("Send this day to Calendar")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { openCalendarApp() }) {
+                        Text("Open Calendar")
+                    }
                 }
                 calendarStatus?.let { status ->
                     Text(status, style = MaterialTheme.typography.bodySmall)
