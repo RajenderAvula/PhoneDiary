@@ -5,10 +5,6 @@ import android.media.MediaRecorder
 import android.net.Uri
 import java.io.File
 
-/**
- * Records audio to a temp file, then hands it to FileAttachmentHelper to
- * copy into Downloads/PhoneDiary alongside regular file attachments.
- */
 class AudioRecorderHelper(private val context: Context) {
 
     private var recorder: MediaRecorder? = null
@@ -36,8 +32,7 @@ class AudioRecorderHelper(private val context: Context) {
         recorder = mediaRecorder
     }
 
-    /** Stops recording and copies the result into Downloads/PhoneDiary. Returns the saved display name, or null on failure. */
-    fun stopRecordingAndSave(): String? {
+    fun stopRecordingAndSave(): SavedAttachment? {
         return try {
             recorder?.apply {
                 stop()
@@ -64,7 +59,7 @@ class AudioRecorderHelper(private val context: Context) {
                 release()
             }
         } catch (e: Exception) {
-            // ignore — recorder may not have started successfully
+            // ignore
         }
         recorder = null
         tempFile?.delete()
