@@ -9,11 +9,13 @@ import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
 
+data class SavedAttachment(val name: String, val uri: Uri)
+
 object FileAttachmentHelper {
 
     private const val SUBFOLDER = "PhoneDiary"
 
-    fun copyToDownloads(context: Context, sourceUri: Uri, forcedName: String? = null): String? {
+    fun copyToDownloads(context: Context, sourceUri: Uri, forcedName: String? = null): SavedAttachment? {
         val displayName = forcedName ?: queryDisplayName(context, sourceUri) ?: "attachment_${System.currentTimeMillis()}"
 
         return try {
@@ -37,7 +39,7 @@ object FileAttachmentHelper {
         return null
     }
 
-    private fun copyViaMediaStore(context: Context, sourceUri: Uri, displayName: String): String? {
+    private fun copyViaMediaStore(context: Context, sourceUri: Uri, displayName: String): SavedAttachment? {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, displayName)
             put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$SUBFOLDER")
@@ -57,10 +59,10 @@ object FileAttachmentHelper {
         values.put(MediaStore.Downloads.IS_PENDING, 0)
         resolver.update(destUri, values, null, null)
 
-        return displayName
+        return SavedAttachment(displayName, destUri)
     }
 
-    private fun copyViaLegacyFile(context: Context, sourceUri: Uri, displayName: String): String? {
+    private fun copyViaLegacyFile(context: Context, sourceUri: Uri, displayName: String): SavedAttachment? {
         val downloadsDir = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
             SUBFOLDER
@@ -73,6 +75,9 @@ object FileAttachmentHelper {
                 input.copyTo(out)
             }
         }
-        return displayName
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", destFile
+        )
+        return SavedAttachment(displayName, uri)
     }
 }
