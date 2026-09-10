@@ -1,8 +1,10 @@
 package com.example.phonediary.ui
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -55,6 +57,30 @@ fun DiaryScreen() {
                 val savedName = FileAttachmentHelper.copyToDownloads(context, uri)
                 pendingAttachmentName = savedName
             }
+        }
+    }
+
+    val voiceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spokenText = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!spokenText.isNullOrBlank()) {
+                noteText = if (noteText.isBlank()) spokenText else "$noteText $spokenText"
+            }
+        }
+    }
+
+    fun startVoiceInput() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your entry")
+        }
+        val activityExists = intent.resolveActivity(context.packageManager) != null
+        if (activityExists) {
+            voiceLauncher.launch(intent)
         }
     }
 
@@ -131,14 +157,20 @@ fun DiaryScreen() {
             }
 
             Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(
-                value = noteText,
-                onValueChange = { noteText = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("What are you doing?") },
-                minLines = 1,
-                maxLines = 6
-            )
+            Row(verticalAlignment = Alignment.Top) {
+                OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("What are you doing?") },
+                    minLines = 1,
+                    maxLines = 6
+                )
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = { startVoiceInput() }) {
+                    Text("🎤")
+                }
+            }
 
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
