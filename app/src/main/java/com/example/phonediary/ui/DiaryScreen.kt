@@ -1,6 +1,5 @@
 package com.example.phonediary.ui
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
@@ -8,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -114,12 +115,14 @@ fun DiaryScreen() {
             }
 
             Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.Top) {
                 OutlinedTextField(
                     value = noteText,
                     onValueChange = { noteText = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("What are you doing?") }
+                    placeholder = { Text("What are you doing?") },
+                    minLines = 1,
+                    maxLines = 6
                 )
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = {
@@ -184,7 +187,9 @@ fun DiaryScreen() {
                                 OutlinedTextField(
                                     value = editingEntryText,
                                     onValueChange = { editingEntryText = it },
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier.fillMaxWidth(),
+                                    minLines = 1,
+                                    maxLines = 6
                                 )
                                 Row {
                                     TextButton(onClick = {
