@@ -4,7 +4,9 @@ import android.app.Activity
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.CalendarContract
+import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,7 +28,9 @@ import com.example.phonediary.accessibility.BlockedAppsStore
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.LogEntry
+import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
+import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -40,6 +44,7 @@ fun DiaryScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val audioRecorder = remember { AudioRecorderHelper(context) }
 
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
@@ -47,12 +52,19 @@ fun DiaryScreen() {
     var noteText by remember { mutableStateOf("") }
     var locationText by remember { mutableStateOf("") }
     var pendingAttachmentName by remember { mutableStateOf<String?>(null) }
+    var isRecordingAudio by remember { mutableStateOf(false) }
+    var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingVideoName by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var newBlockedPackage by remember { mutableStateOf("") }
     var blockedApps by remember { mutableStateOf(setOf<String>()) }
     var calendarStatus by remember { mutableStateOf<String?>(null) }
+
+    // Editing state now covers all three editable fields, not just note text.
     var editingEntryId by remember { mutableStateOf<Long?>(null) }
-    var editingEntryText by remember { mutableStateOf("") }
+    var editingNoteText by remember { mutableStateOf("") }
+    var editingLocationText by remember { mutableStateOf("") }
+    var editingAttachmentName by remember { mutableStateOf<String?>(null) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -78,15 +90,57 @@ fun DiaryScreen() {
         }
     }
 
+    val videoCaptureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            pendingVideoName?.let { name ->
+                pendingAttachmentName = name
+            }
+        } else {
+            pendingVideoUri = null
+            pendingVideoName = null
+        }
+    }
+
     fun startVoiceInput() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your entry")
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
-        val activityExists = intent.resolveActivity(context.packageManager) != null
-        if (activityExists) {
+        if (intent.resolveActivity(context.packageManager) != null) {
             voiceLauncher.launch(intent)
+        }
+    }
+
+    fun toggleAudioRecording() {
+        if (isRecordingAudio) {
+            val savedName = audioRecorder.stopRecordingAndSave()
+            isRecordingAudio = false
+            if (savedName != null) {
+                pendingAttachmentName = savedName
+            }
+        } else {
+            try {
+                audioRecorder.startRecording()
+                isRecordingAudio = true
+            } catch (e: Exception) {
+                isRecordingAudio = false
+            }
+        }
+    }
+
+    fun startVideoCapture() {
+        val result = VideoCaptureHelper.createVideoOutputUri(context) ?: return
+        val (uri, name) = result
+        pendingVideoUri = uri
+        pendingVideoName = name
+        val intent = Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply {
+            putExtra(MediaStore.EXTRA_OUTPUT, uri)
+        }
+        if (intent.resolveActivity(context.packageManager) != null) {
+            videoCaptureLauncher.launch(intent)
         }
     }
 
@@ -99,6 +153,7 @@ fun DiaryScreen() {
     fun openDate(dateKey: String) {
         selectedDate = dateKey
         calendarStatus = null
+        editingEntryId = null
         scope.launch {
             dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
         }
@@ -121,8 +176,7 @@ fun DiaryScreen() {
     fun openCalendarApp() {
         val builder = CalendarContract.CONTENT_URI.buildUpon().appendPath("time")
         ContentUris.appendId(builder, System.currentTimeMillis())
-        val intent = Intent(Intent.ACTION_VIEW).setData(builder.build())
-        context.startActivity(intent)
+        context.startActivity(Intent(Intent.ACTION_VIEW).setData(builder.build()))
     }
 
     LaunchedEffect(Unit) {
@@ -201,8 +255,20 @@ fun DiaryScreen() {
                     Text("Attach file")
                 }
                 Spacer(Modifier.width(8.dp))
-                pendingAttachmentName?.let { name ->
-                    Text(name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = { toggleAudioRecording() }) {
+                    Text(if (isRecordingAudio) "⏹ Stop" else "🎙 Record voice")
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = { startVideoCapture() }) {
+                Text("📹 Record video")
+            }
+
+            pendingAttachmentName?.let { name ->
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Attached: $name", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                     TextButton(onClick = { pendingAttachmentName = null }) { Text("✕") }
                 }
             }
@@ -267,16 +333,40 @@ fun DiaryScreen() {
                         if (editingEntryId == entry.id) {
                             Column(modifier = Modifier.padding(vertical = 4.dp)) {
                                 OutlinedTextField(
-                                    value = editingEntryText,
-                                    onValueChange = { editingEntryText = it },
+                                    value = editingNoteText,
+                                    onValueChange = { editingNoteText = it },
                                     modifier = Modifier.fillMaxWidth(),
+                                    placeholder = { Text("Note") },
                                     minLines = 1,
                                     maxLines = 6
                                 )
+                                Spacer(Modifier.height(4.dp))
+                                OutlinedTextField(
+                                    value = editingLocationText,
+                                    onValueChange = { editingLocationText = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    placeholder = { Text("Location URL") },
+                                    singleLine = true
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        editingAttachmentName?.let { "Attached: $it" } ?: "No attachment",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (editingAttachmentName != null) {
+                                        TextButton(onClick = { editingAttachmentName = null }) { Text("Remove") }
+                                    }
+                                }
                                 Row {
                                     TextButton(onClick = {
                                         scope.launch {
-                                            val updated = entry.copy(note = editingEntryText)
+                                            val updated = entry.copy(
+                                                note = editingNoteText.ifBlank { null },
+                                                locationUrl = editingLocationText.ifBlank { null },
+                                                attachmentFileName = editingAttachmentName
+                                            )
                                             AppDatabase.getInstance(context).logEntryDao().update(updated)
                                             editingEntryId = null
                                             openDate(date)
@@ -300,7 +390,9 @@ fun DiaryScreen() {
                                     )
                                     TextButton(onClick = {
                                         editingEntryId = entry.id
-                                        editingEntryText = entry.note ?: entry.appName ?: ""
+                                        editingNoteText = entry.note ?: ""
+                                        editingLocationText = entry.locationUrl ?: ""
+                                        editingAttachmentName = entry.attachmentFileName
                                     }) { Text("Edit") }
                                     TextButton(onClick = {
                                         scope.launch {
@@ -355,26 +447,20 @@ private fun CalendarMonthView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = { currentMonth = currentMonth.minusMonths(1) }) { Text("◀") }
-            val monthName = currentMonth.month.name.lowercase()
-                .replaceFirstChar { it.uppercase() }
+            val monthName = currentMonth.month.name.lowercase().replaceFirstChar { it.uppercase() }
             Text("$monthName ${currentMonth.year}", style = MaterialTheme.typography.titleSmall)
             TextButton(onClick = { currentMonth = currentMonth.plusMonths(1) }) { Text("▶") }
         }
 
         Row(modifier = Modifier.fillMaxWidth()) {
             listOf("S", "M", "T", "W", "T", "F", "S").forEach { label ->
-                Text(
-                    label,
-                    modifier = Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodySmall
-                )
+                Text(label, modifier = Modifier.weight(1f), textAlign = TextAlign.Center, style = MaterialTheme.typography.bodySmall)
             }
         }
 
         val firstDay = currentMonth.atDay(1)
         val daysInMonth = currentMonth.lengthOfMonth()
-        val startOffset = firstDay.dayOfWeek.value % 7 // Sunday = 0
+        val startOffset = firstDay.dayOfWeek.value % 7
         val totalCells = startOffset + daysInMonth
         val rows = (totalCells + 6) / 7
 
@@ -395,32 +481,20 @@ private fun CalendarMonthView(
                                 .aspectRatio(1f)
                                 .clickable { onDayClick(dateKey) }
                                 .then(
-                                    if (isSelected) {
-                                        Modifier.background(
-                                            MaterialTheme.colorScheme.primaryContainer,
-                                            shape = CircleShape
-                                        )
-                                    } else Modifier
+                                    if (isSelected) Modifier.background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
+                                    else Modifier
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(dayNum.toString(), style = MaterialTheme.typography.bodySmall)
                                 if (hasEntry) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(4.dp)
-                                            .background(MaterialTheme.colorScheme.primary, CircleShape)
-                                    )
+                                    Box(modifier = Modifier.size(4.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
                                 }
                             }
                         }
                     } else {
-                        Spacer(
-                            modifier = Modifier
-                                .weight(1f)
-                                .aspectRatio(1f)
-                        )
+                        Spacer(modifier = Modifier.weight(1f).aspectRatio(1f))
                     }
                 }
             }
@@ -446,9 +520,9 @@ private fun SettingsPanel(
         Spacer(Modifier.height(8.dp))
         Text(if (hasUsagePermission) "Usage access: granted" else "Usage access: not granted")
         if (!hasUsagePermission) {
-            Button(onClick = {
-                context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-            }) { Text("Grant usage access") }
+            Button(onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) {
+                Text("Grant usage access")
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -456,13 +530,10 @@ private fun SettingsPanel(
 
         Spacer(Modifier.height(8.dp))
         Text("Screen-content logging (Accessibility)")
-        Button(onClick = {
-            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }) { Text("Open Accessibility settings") }
-        Text(
-            "Find 'Phone Diary' in the list and turn it on there.",
-            style = MaterialTheme.typography.bodySmall
-        )
+        Button(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
+            Text("Open Accessibility settings")
+        }
+        Text("Find 'Phone Diary' in the list and turn it on there.", style = MaterialTheme.typography.bodySmall)
 
         Spacer(Modifier.height(12.dp))
         Divider()
