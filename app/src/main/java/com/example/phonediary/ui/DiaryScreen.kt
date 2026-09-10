@@ -68,6 +68,10 @@ fun DiaryScreen() {
     var editingLocationText by remember { mutableStateOf("") }
     var editingAttachments by remember { mutableStateOf(listOf<String>()) }
 
+    // Multi-select delete state
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -157,6 +161,8 @@ fun DiaryScreen() {
         selectedDate = dateKey
         calendarStatus = null
         editingEntryId = null
+        selectionMode = false
+        selectedEntryIds = emptySet()
         scope.launch {
             dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
         }
@@ -180,6 +186,17 @@ fun DiaryScreen() {
         val builder = CalendarContract.CONTENT_URI.buildUpon().appendPath("time")
         ContentUris.appendId(builder, System.currentTimeMillis())
         context.startActivity(Intent(Intent.ACTION_VIEW).setData(builder.build()))
+    }
+
+    fun deleteSelectedEntries(dateKey: String) {
+        scope.launch {
+            val dao = AppDatabase.getInstance(context).logEntryDao()
+            dayLogEntries.filter { it.id in selectedEntryIds }.forEach { dao.delete(it) }
+            selectedEntryIds = emptySet()
+            selectionMode = false
+            openDate(dateKey)
+            CalendarWriter.refreshDate(context, dateKey)
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -298,7 +315,7 @@ fun DiaryScreen() {
                                 attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name })
                             )
                         )
-                        CalendarWriter.refreshToday(context)
+                        CalendarWriter.refreshDate(context, todayKey)
                         noteText = ""
                         locationText = ""
                         pendingAttachments = emptyList()
@@ -324,7 +341,22 @@ fun DiaryScreen() {
                 Divider()
                 Spacer(Modifier.height(12.dp))
 
-                Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
+                    if (dayLogEntries.isNotEmpty()) {
+                        TextButton(onClick = {
+                            selectionMode = !selectionMode
+                            selectedEntryIds = emptySet()
+                        }) {
+                            Text(if (selectionMode) "Cancel" else "Select")
+                        }
+                    }
+                }
+
                 if (dayLogEntries.isEmpty()) {
                     Text("No entries logged for this day yet.")
                 } else {
@@ -387,49 +419,75 @@ fun DiaryScreen() {
                                             AppDatabase.getInstance(context).logEntryDao().update(updated)
                                             editingEntryId = null
                                             openDate(date)
-                                            CalendarWriter.refreshToday(context)
+                                            CalendarWriter.refreshDate(context, date)
                                         }
                                     }) { Text("Save") }
                                     TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
                                 }
                             }
                         } else {
-                            Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "$time  •  $displayLabel",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    TextButton(onClick = {
-                                        editingEntryId = entry.id
-                                        editingNoteText = entry.note ?: ""
-                                        editingLocationText = entry.locationUrl ?: ""
-                                        editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
-                                    }) { Text("Edit") }
-                                    TextButton(onClick = {
-                                        scope.launch {
-                                            AppDatabase.getInstance(context).logEntryDao().delete(entry)
-                                            openDate(date)
-                                            CalendarWriter.refreshToday(context)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                if (selectionMode) {
+                                    Checkbox(
+                                        checked = entry.id in selectedEntryIds,
+                                        onCheckedChange = { checked ->
+                                            selectedEntryIds = if (checked) {
+                                                selectedEntryIds + entry.id
+                                            } else {
+                                                selectedEntryIds - entry.id
+                                            }
                                         }
-                                    }) { Text("Delete") }
+                                    )
                                 }
-                                entry.locationUrl?.let {
-                                    Text("📍 $it", style = MaterialTheme.typography.bodySmall)
-                                }
-                                AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
-                                    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
-                                    LaunchedEffect(name) {
-                                        resolvedUri = MediaResolveUtil.resolve(context, name)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "$time  •  $displayLabel",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (!selectionMode) {
+                                            TextButton(onClick = {
+                                                editingEntryId = entry.id
+                                                editingNoteText = entry.note ?: ""
+                                                editingLocationText = entry.locationUrl ?: ""
+                                                editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
+                                            }) { Text("Edit") }
+                                            TextButton(onClick = {
+                                                scope.launch {
+                                                    AppDatabase.getInstance(context).logEntryDao().delete(entry)
+                                                    openDate(date)
+                                                    CalendarWriter.refreshDate(context, date)
+                                                }
+                                            }) { Text("Delete") }
+                                        }
                                     }
-                                    AttachmentPreview(name = name, uri = resolvedUri)
+                                    entry.locationUrl?.let {
+                                        Text("📍 $it", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
+                                        var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
+                                        LaunchedEffect(name) {
+                                            resolvedUri = MediaResolveUtil.resolve(context, name)
+                                        }
+                                        AttachmentPreview(name = name, uri = resolvedUri)
+                                    }
                                 }
                             }
+                        }
+                    }
+
+                    if (selectionMode && selectedEntryIds.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { deleteSelectedEntries(date) }) {
+                            Text("Delete selected (${selectedEntryIds.size})")
                         }
                     }
                 }
