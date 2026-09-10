@@ -74,7 +74,8 @@ fun DiaryScreen() {
             }
         }
     }
-fun startVoiceInput() {
+
+    fun startVoiceInput() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your entry")
@@ -84,7 +85,7 @@ fun startVoiceInput() {
         if (activityExists) {
             voiceLauncher.launch(intent)
         }
-}
+    }
 
     fun refreshDates() {
         scope.launch {
@@ -103,8 +104,9 @@ fun startVoiceInput() {
     fun sendToCalendar(dateKey: String, entries: List<LogEntry>) {
         scope.launch {
             val wrote = CalendarWriter.writeDayLog(context, dateKey, entries)
+            val targetInfo = CalendarWriter.getTargetCalendarInfo(context)
             calendarStatus = if (wrote) {
-                "Saved to Calendar ✓"
+                "Saved to Calendar ✓\n$targetInfo"
             } else if (!CalendarWriter.hasCalendarPermission(context)) {
                 "Failed: Calendar permission not granted"
             } else {
