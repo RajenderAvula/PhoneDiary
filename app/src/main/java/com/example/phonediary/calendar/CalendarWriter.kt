@@ -176,4 +176,27 @@ object CalendarWriter {
         val entries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
         writeDayLog(context, dateKey, entries)
     }
+
+    /** For diagnostics: returns the display name of whichever calendar we'd write into. */
+    fun getTargetCalendarInfo(context: Context): String {
+        val id = findWritableCalendarId(context) ?: return "No writable calendar found"
+
+        val projection = arrayOf(
+            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
+            CalendarContract.Calendars.ACCOUNT_NAME,
+            CalendarContract.Calendars.VISIBLE
+        )
+        context.contentResolver.query(
+            ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, id),
+            projection, null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val name = cursor.getString(0)
+                val account = cursor.getString(1)
+                val visible = cursor.getInt(2)
+                return "Calendar: \"$name\" (account: $account, visible: ${visible == 1}, id: $id)"
+            }
+        }
+        return "Calendar id $id found but details unreadable"
+    }
 }
