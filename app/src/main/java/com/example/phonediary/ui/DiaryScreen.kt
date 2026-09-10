@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import com.example.phonediary.accessibility.BlockedAppsStore
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
+import com.example.phonediary.data.AttachmentListUtil
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
@@ -51,7 +52,7 @@ fun DiaryScreen() {
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
     var noteText by remember { mutableStateOf("") }
     var locationText by remember { mutableStateOf("") }
-    var pendingAttachmentName by remember { mutableStateOf<String?>(null) }
+    var pendingAttachments by remember { mutableStateOf(listOf<String>()) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
@@ -60,19 +61,20 @@ fun DiaryScreen() {
     var blockedApps by remember { mutableStateOf(setOf<String>()) }
     var calendarStatus by remember { mutableStateOf<String?>(null) }
 
-    // Editing state now covers all three editable fields, not just note text.
     var editingEntryId by remember { mutableStateOf<Long?>(null) }
     var editingNoteText by remember { mutableStateOf("") }
     var editingLocationText by remember { mutableStateOf("") }
-    var editingAttachmentName by remember { mutableStateOf<String?>(null) }
+    var editingAttachments by remember { mutableStateOf(listOf<String>()) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
             scope.launch {
-                val savedName = FileAttachmentHelper.copyToDownloads(context, uri)
-                pendingAttachmentName = savedName
+                val savedNames = uris.mapNotNull { uri ->
+                    FileAttachmentHelper.copyToDownloads(context, uri)
+                }
+                pendingAttachments = pendingAttachments + savedNames
             }
         }
     }
@@ -95,12 +97,11 @@ fun DiaryScreen() {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             pendingVideoName?.let { name ->
-                pendingAttachmentName = name
+                pendingAttachments = pendingAttachments + name
             }
-        } else {
-            pendingVideoUri = null
-            pendingVideoName = null
         }
+        pendingVideoUri = null
+        pendingVideoName = null
     }
 
     fun startVoiceInput() {
@@ -119,7 +120,7 @@ fun DiaryScreen() {
             val savedName = audioRecorder.stopRecordingAndSave()
             isRecordingAudio = false
             if (savedName != null) {
-                pendingAttachmentName = savedName
+                pendingAttachments = pendingAttachments + savedName
             }
         } else {
             try {
@@ -252,7 +253,7 @@ fun DiaryScreen() {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
-                    Text("Attach file")
+                    Text("Attach files")
                 }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = { toggleAudioRecording() }) {
@@ -265,17 +266,22 @@ fun DiaryScreen() {
                 Text("📹 Record video")
             }
 
-            pendingAttachmentName?.let { name ->
+            if (pendingAttachments.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Attached: $name", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { pendingAttachmentName = null }) { Text("✕") }
+                Text("Attachments to save:", style = MaterialTheme.typography.bodySmall)
+                pendingAttachments.forEach { name ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("• $name", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            pendingAttachments = pendingAttachments.filterNot { it == name }
+                        }) { Text("✕") }
+                    }
                 }
             }
 
             Spacer(Modifier.height(8.dp))
             Button(onClick = {
-                if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachmentName != null) {
+                if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachments.isNotEmpty()) {
                     scope.launch {
                         val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
                             .format(System.currentTimeMillis())
@@ -286,13 +292,13 @@ fun DiaryScreen() {
                                 source = "manual_note",
                                 note = noteText.ifBlank { null },
                                 locationUrl = locationText.ifBlank { null },
-                                attachmentFileName = pendingAttachmentName
+                                attachmentFileName = AttachmentListUtil.toStored(pendingAttachments)
                             )
                         )
                         CalendarWriter.refreshToday(context)
                         noteText = ""
                         locationText = ""
-                        pendingAttachmentName = null
+                        pendingAttachments = emptyList()
                         refreshDates()
                         if (selectedDate == todayKey) openDate(todayKey)
                     }
@@ -349,14 +355,17 @@ fun DiaryScreen() {
                                     singleLine = true
                                 )
                                 Spacer(Modifier.height(4.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        editingAttachmentName?.let { "Attached: $it" } ?: "No attachment",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    if (editingAttachmentName != null) {
-                                        TextButton(onClick = { editingAttachmentName = null }) { Text("Remove") }
+                                Text("Attachments:", style = MaterialTheme.typography.bodySmall)
+                                if (editingAttachments.isEmpty()) {
+                                    Text("None", style = MaterialTheme.typography.bodySmall)
+                                } else {
+                                    editingAttachments.forEach { name ->
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text("• $name", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                                            TextButton(onClick = {
+                                                editingAttachments = editingAttachments.filterNot { it == name }
+                                            }) { Text("Remove") }
+                                        }
                                     }
                                 }
                                 Row {
@@ -365,7 +374,7 @@ fun DiaryScreen() {
                                             val updated = entry.copy(
                                                 note = editingNoteText.ifBlank { null },
                                                 locationUrl = editingLocationText.ifBlank { null },
-                                                attachmentFileName = editingAttachmentName
+                                                attachmentFileName = AttachmentListUtil.toStored(editingAttachments)
                                             )
                                             AppDatabase.getInstance(context).logEntryDao().update(updated)
                                             editingEntryId = null
@@ -392,7 +401,7 @@ fun DiaryScreen() {
                                         editingEntryId = entry.id
                                         editingNoteText = entry.note ?: ""
                                         editingLocationText = entry.locationUrl ?: ""
-                                        editingAttachmentName = entry.attachmentFileName
+                                        editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
                                     }) { Text("Edit") }
                                     TextButton(onClick = {
                                         scope.launch {
@@ -405,8 +414,8 @@ fun DiaryScreen() {
                                 entry.locationUrl?.let {
                                     Text("📍 $it", style = MaterialTheme.typography.bodySmall)
                                 }
-                                entry.attachmentFileName?.let {
-                                    Text("📎 $it", style = MaterialTheme.typography.bodySmall)
+                                AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
+                                    Text("📎 $name", style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
