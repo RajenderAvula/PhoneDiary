@@ -10,7 +10,6 @@ import androidx.core.content.ContextCompat
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.LogEntry
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 
@@ -139,15 +138,11 @@ object CalendarWriter {
         val calendarId = findWritableCalendarId(context) ?: return false
         val title = "Phone Diary - $dateKey"
 
-        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val day = sdf.parse(dateKey) ?: return false
-
-        val cal = Calendar.getInstance()
-        cal.time = day
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        val startMillis = cal.timeInMillis
+        // All-day events MUST be expressed in UTC midnight, or sync adapters
+        // (like Google's) can shift the displayed date by a day or drop it.
+        val utcFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        utcFormat.timeZone = TimeZone.getTimeZone("UTC")
+        val startMillis = utcFormat.parse(dateKey)?.time ?: return false
         val endMillis = startMillis + (24 * 60 * 60 * 1000)
 
         val values = ContentValues().apply {
@@ -157,7 +152,7 @@ object CalendarWriter {
             put(CalendarContract.Events.DTSTART, startMillis)
             put(CalendarContract.Events.DTEND, endMillis)
             put(CalendarContract.Events.ALL_DAY, 1)
-            put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
+            put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
         }
 
         val existingEventId = findExistingEventId(context, calendarId, title)
