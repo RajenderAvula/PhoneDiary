@@ -24,6 +24,9 @@ interface LogEntryDao {
 
     @Query("SELECT DISTINCT dateKey FROM log_entries ORDER BY dateKey DESC")
     suspend fun getAllLoggedDates(): List<String>
+
+    @Query("SELECT * FROM log_entries ORDER BY dateKey ASC, timestampMillis ASC")
+    suspend fun getAllEntries(): List<LogEntry>
 }
 
 @Dao
