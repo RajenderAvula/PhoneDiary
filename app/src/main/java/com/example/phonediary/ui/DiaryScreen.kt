@@ -30,8 +30,11 @@ import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.AttachmentListUtil
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.files.AudioRecorderHelper
+import com.example.phonediary.files.BackupHelper
+import com.example.phonediary.files.EmailBackupHelper
 import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.files.MediaResolveUtil
+import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.usage.UsageStatsCollector
@@ -68,7 +71,6 @@ fun DiaryScreen() {
     var editingLocationText by remember { mutableStateOf("") }
     var editingAttachments by remember { mutableStateOf(listOf<String>()) }
 
-    // Multi-select delete state
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
 
@@ -592,11 +594,95 @@ private fun SettingsPanel(
 ) {
     val hasUsagePermission = remember { UsageStatsCollector(context).hasUsagePermission() }
     val hasCalendarPermission = remember { CalendarWriter.hasCalendarPermission(context) }
+    val scope = rememberCoroutineScope()
+
+    var backupStatus by remember { mutableStateOf<String?>(null) }
+    var isBackingUp by remember { mutableStateOf(false) }
+    var lastBackupUri by remember { mutableStateOf<Uri?>(null) }
+    var lastBackupName by remember { mutableStateOf<String?>(null) }
+
+    var restoreStatus by remember { mutableStateOf<String?>(null) }
+    var isRestoring by remember { mutableStateOf(false) }
+
+    val restorePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            isRestoring = true
+            restoreStatus = null
+            scope.launch {
+                val result = RestoreHelper.restoreFromZip(context, uri)
+                restoreStatus = if (result != null) {
+                    "Restored ${result.entriesRestored} entries, ${result.attachmentsRestored} files ✓"
+                } else {
+                    "Restore failed — make sure you picked a Phone Diary backup zip"
+                }
+                isRestoring = false
+            }
+        }
+    }
 
     Column {
         Text("Settings", style = MaterialTheme.typography.titleMedium)
 
         Spacer(Modifier.height(8.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Backup & Restore", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Backup saves all entries and files into one dated zip, references it in Calendar, and can email it to you.",
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        Spacer(Modifier.height(4.dp))
+        Button(
+            enabled = !isBackingUp,
+            onClick = {
+                isBackingUp = true
+                backupStatus = null
+                scope.launch {
+                    val result = BackupHelper.createBackup(context)
+                    if (result != null) {
+                        backupStatus = "Saved: ${result.fileName} ✓ (also recorded in Calendar)"
+                        lastBackupUri = result.uri
+                        lastBackupName = result.fileName
+                    } else {
+                        backupStatus = "Backup failed"
+                    }
+                    isBackingUp = false
+                }
+            }
+        ) {
+            Text(if (isBackingUp) "Backing up…" else "Backup now")
+        }
+        backupStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        if (lastBackupUri != null && lastBackupName != null) {
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = {
+                EmailBackupHelper.shareBackupViaEmail(context, lastBackupUri!!, lastBackupName!!)
+            }) {
+                Text("Email latest backup")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            enabled = !isRestoring,
+            onClick = { restorePickerLauncher.launch(arrayOf("application/zip", "*/*")) }
+        ) {
+            Text(if (isRestoring) "Restoring…" else "Restore from backup zip")
+        }
+        Text(
+            "Pick a .zip from Downloads, or one you saved from a Gmail attachment.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        restoreStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+
         Text(if (hasUsagePermission) "Usage access: granted" else "Usage access: not granted")
         if (!hasUsagePermission) {
             Button(onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) {
