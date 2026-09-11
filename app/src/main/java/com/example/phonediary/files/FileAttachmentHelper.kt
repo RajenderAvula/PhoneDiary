@@ -13,16 +13,21 @@ data class SavedAttachment(val name: String, val uri: Uri)
 
 object FileAttachmentHelper {
 
-    private const val SUBFOLDER = "PhoneDiary"
+    private const val DEFAULT_SUBFOLDER = "PhoneDiary"
 
-    fun copyToDownloads(context: Context, sourceUri: Uri, forcedName: String? = null): SavedAttachment? {
+    fun copyToDownloads(
+        context: Context,
+        sourceUri: Uri,
+        forcedName: String? = null,
+        subfolder: String = DEFAULT_SUBFOLDER
+    ): SavedAttachment? {
         val displayName = forcedName ?: queryDisplayName(context, sourceUri) ?: "attachment_${System.currentTimeMillis()}"
 
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                copyViaMediaStore(context, sourceUri, displayName)
+                copyViaMediaStore(context, sourceUri, displayName, subfolder)
             } else {
-                copyViaLegacyFile(context, sourceUri, displayName)
+                copyViaLegacyFile(context, sourceUri, displayName, subfolder)
             }
         } catch (e: Exception) {
             null
@@ -39,10 +44,10 @@ object FileAttachmentHelper {
         return null
     }
 
-    private fun copyViaMediaStore(context: Context, sourceUri: Uri, displayName: String): SavedAttachment? {
+    private fun copyViaMediaStore(context: Context, sourceUri: Uri, displayName: String, subfolder: String): SavedAttachment? {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, displayName)
-            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$SUBFOLDER")
+            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$subfolder")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
 
@@ -62,10 +67,10 @@ object FileAttachmentHelper {
         return SavedAttachment(displayName, destUri)
     }
 
-    private fun copyViaLegacyFile(context: Context, sourceUri: Uri, displayName: String): SavedAttachment? {
+    private fun copyViaLegacyFile(context: Context, sourceUri: Uri, displayName: String, subfolder: String): SavedAttachment? {
         val downloadsDir = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            SUBFOLDER
+            subfolder
         )
         if (!downloadsDir.exists()) downloadsDir.mkdirs()
 
