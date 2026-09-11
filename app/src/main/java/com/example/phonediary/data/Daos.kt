@@ -27,6 +27,16 @@ interface LogEntryDao {
 
     @Query("SELECT * FROM log_entries ORDER BY dateKey ASC, timestampMillis ASC")
     suspend fun getAllEntries(): List<LogEntry>
+
+    @Query("""
+        SELECT * FROM log_entries 
+        WHERE note LIKE '%' || :keyword || '%' 
+           OR appName LIKE '%' || :keyword || '%'
+           OR locationUrl LIKE '%' || :keyword || '%'
+           OR attachmentFileName LIKE '%' || :keyword || '%'
+        ORDER BY timestampMillis DESC
+    """)
+    suspend fun searchEntries(keyword: String): List<LogEntry>
 }
 
 @Dao
