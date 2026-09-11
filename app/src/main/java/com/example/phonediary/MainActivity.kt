@@ -5,9 +5,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.example.phonediary.ui.AppTheme
 import com.example.phonediary.ui.DiaryScreen
+import com.example.phonediary.ui.PhoneDiaryTheme
+import com.example.phonediary.ui.ThemePrefs
 import com.example.phonediary.worker.DiaryGenerationWorker
 
 class MainActivity : ComponentActivity() {
@@ -30,9 +36,17 @@ class MainActivity : ComponentActivity() {
         DiaryGenerationWorker.schedule(applicationContext)
 
         setContent {
-            MaterialTheme {
+            var currentTheme by remember { mutableStateOf(ThemePrefs.getTheme(applicationContext)) }
+
+            PhoneDiaryTheme(theme = currentTheme) {
                 Surface {
-                    DiaryScreen()
+                    DiaryScreen(
+                        currentTheme = currentTheme,
+                        onThemeChange = { newTheme ->
+                            currentTheme = newTheme
+                            ThemePrefs.setTheme(applicationContext, newTheme)
+                        }
+                    )
                 }
             }
         }
