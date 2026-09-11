@@ -1,5 +1,6 @@
 package com.example.phonediary.files
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -11,7 +12,10 @@ object EmailBackupHelper {
             type = "application/zip"
             putExtra(Intent.EXTRA_STREAM, zipUri)
             putExtra(Intent.EXTRA_SUBJECT, "Phone Diary Backup - $fileName")
-            putExtra(Intent.EXTRA_TEXT, "Attached: Phone Diary backup created on this device.")
+            putExtra(Intent.EXTRA_TEXT, "Attached: Phone Diary backup (includes all entries and attached files) created on this device.")
+            // Some mail apps (Gmail included) only pick up the attachment
+            // reliably when ClipData is set explicitly alongside EXTRA_STREAM.
+            clipData = ClipData.newRawUri("", zipUri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
 
