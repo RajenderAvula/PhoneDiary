@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.provider.CalendarContract
 import androidx.core.content.ContextCompat
 import com.example.phonediary.data.AppDatabase
+import com.example.phonediary.data.AttachmentListUtil
 import com.example.phonediary.data.LogEntry
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -31,12 +32,6 @@ object CalendarWriter {
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    /**
-     * Returns the calendar we should write to, PINNED once chosen so it
-     * never silently flips between calendars on later calls (which was
-     * causing "missing" entries — they weren't deleted, they were written
-     * to a different calendar than the one being viewed).
-     */
     private fun findWritableCalendarId(context: Context): Long? {
         val pinnedId = prefs(context).getLong(KEY_PINNED_CALENDAR_ID, -1L)
         if (pinnedId != -1L && calendarStillExists(context, pinnedId)) {
@@ -44,7 +39,6 @@ object CalendarWriter {
             return pinnedId
         }
 
-        // No valid pinned calendar yet — pick one now and pin it permanently.
         val chosen = pickCalendar(context) ?: return null
         prefs(context).edit().putLong(KEY_PINNED_CALENDAR_ID, chosen).apply()
         ensureCalendarVisible(context, chosen)
@@ -148,7 +142,7 @@ object CalendarWriter {
 
             val extras = buildList {
                 entry.locationUrl?.takeIf { it.isNotBlank() }?.let { add("Location: $it") }
-                com.example.phonediary.data.AttachmentListUtil.toList(entry.attachmentFileName).forEach {
+                AttachmentListUtil.toList(entry.attachmentFileName).forEach {
                     add("Attachment: $it (in Downloads/PhoneDiary or Movies/PhoneDiary)")
                 }
             }
@@ -157,11 +151,6 @@ object CalendarWriter {
         }
     }
 
-    /**
-     * Writes/updates the given day's event ONLY — never touches any other
-     * day's event. If entries is empty, the existing event for that day
-     * (if any) is deleted, since an empty day shouldn't show a stale event.
-     */
     fun writeDayLog(context: Context, dateKey: String, entries: List<LogEntry>): Boolean {
         if (!hasCalendarPermission(context)) return false
 
@@ -170,7 +159,6 @@ object CalendarWriter {
         val existingEventId = findExistingEventId(context, calendarId, title)
 
         if (entries.isEmpty()) {
-            // Nothing left to show for this day — remove the now-stale event, if any.
             if (existingEventId != null) {
                 val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, existingEventId)
                 context.contentResolver.delete(uri, null, null)
@@ -201,7 +189,6 @@ object CalendarWriter {
         }
     }
 
-    /** Refreshes the calendar event for a SPECIFIC date — use this, not refreshToday, when editing a past day. */
     suspend fun refreshDate(context: Context, dateKey: String) {
         val entries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
         writeDayLog(context, dateKey, entries)
@@ -233,5 +220,35 @@ object CalendarWriter {
             }
         }
         return "Calendar id $id found but details unreadable"
+    }
+
+    /**
+     * Records that a backup zip was created — a distinct calendar event
+     * separate from daily diary events, so backups show up as their own
+     * searchable trail in Calendar.
+     */
+    fun recordBackupEvent(context: Context, dateKey: String, zipFileName: String, entryCount: Int): Boolean {
+        if (!hasCalendarPermission(context)) return false
+        val calendarId = findWritableCalendarId(context) ?: return false
+
+        val title = "Phone Diary Backup - $zipFileName"
+        val description = "Backup file: $zipFileName\nLocation: Downloads/PhoneDiary/backups\nEntries included: $entryCount\nCreated: $dateKey"
+
+        val utcFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        utcFormat.timeZone = TimeZone.getTimeZone("UTC")
+        val startMillis = utcFormat.parse(dateKey)?.time ?: return false
+        val endMillis = startMillis + (24 * 60 * 60 * 1000)
+
+        val values = ContentValues().apply {
+            put(CalendarContract.Events.CALENDAR_ID, calendarId)
+            put(CalendarContract.Events.TITLE, title)
+            put(CalendarContract.Events.DESCRIPTION, description)
+            put(CalendarContract.Events.DTSTART, startMillis)
+            put(CalendarContract.Events.DTEND, endMillis)
+            put(CalendarContract.Events.ALL_DAY, 1)
+            put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
+        }
+
+        return context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values) != null
     }
 }
