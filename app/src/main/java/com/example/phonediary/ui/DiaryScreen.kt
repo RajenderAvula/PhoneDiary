@@ -46,7 +46,10 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DiaryScreen() {
+fun DiaryScreen(
+    currentTheme: AppTheme = AppTheme.DARK,
+    onThemeChange: (AppTheme) -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
@@ -73,6 +76,10 @@ fun DiaryScreen() {
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
+
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<LogEntry>?>(null) }
+    var isSearching by remember { mutableStateOf(false) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -165,8 +172,22 @@ fun DiaryScreen() {
         editingEntryId = null
         selectionMode = false
         selectedEntryIds = emptySet()
+        searchResults = null
+        searchQuery = ""
         scope.launch {
             dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
+        }
+    }
+
+    fun runSearch(keyword: String) {
+        if (keyword.isBlank()) {
+            searchResults = null
+            return
+        }
+        isSearching = true
+        scope.launch {
+            searchResults = AppDatabase.getInstance(context).logEntryDao().searchEntries(keyword.trim())
+            isSearching = false
         }
     }
 
@@ -241,11 +262,62 @@ fun DiaryScreen() {
                     onRemoveBlocked = { pkg ->
                         BlockedAppsStore.removeBlockedPackage(context, pkg)
                         blockedApps = BlockedAppsStore.getBlockedPackages(context)
-                    }
+                    },
+                    currentTheme = currentTheme,
+                    onThemeChange = onThemeChange
                 )
                 Divider(modifier = Modifier.padding(vertical = 12.dp))
             }
 
+            Text("Search", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = {
+                    searchQuery = it
+                    runSearch(it)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search notes, apps, locations, files…") },
+                singleLine = true,
+                trailingIcon = {
+                    if (searchQuery.isNotBlank()) {
+                        TextButton(onClick = {
+                            searchQuery = ""
+                            searchResults = null
+                        }) { Text("✕") }
+                    }
+                }
+            )
+
+            searchResults?.let { results ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (isSearching) "Searching…" else "${results.size} result(s)",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                results.forEach { entry ->
+                    val entryDateTime = remember(entry.timestampMillis) {
+                        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(entry.timestampMillis)
+                    }
+                    val label = entry.note ?: entry.appName ?: entry.source
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { openDate(entry.dateKey) }
+                            .padding(vertical = 6.dp)
+                    ) {
+                        Column {
+                            Text(entryDateTime, style = MaterialTheme.typography.bodySmall)
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    Divider()
+                }
+                Spacer(Modifier.height(8.dp))
+                Divider()
+            }
+
+            Spacer(Modifier.height(16.dp))
             Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.Top) {
                 OutlinedTextField(
@@ -590,7 +662,9 @@ private fun SettingsPanel(
     newBlockedPackage: String,
     onNewBlockedPackageChange: (String) -> Unit,
     onAddBlocked: () -> Unit,
-    onRemoveBlocked: (String) -> Unit
+    onRemoveBlocked: (String) -> Unit,
+    currentTheme: AppTheme,
+    onThemeChange: (AppTheme) -> Unit
 ) {
     val hasUsagePermission = remember { UsageStatsCollector(context).hasUsagePermission() }
     val hasCalendarPermission = remember { CalendarWriter.hasCalendarPermission(context) }
@@ -626,6 +700,24 @@ private fun SettingsPanel(
         Text("Settings", style = MaterialTheme.typography.titleMedium)
 
         Spacer(Modifier.height(8.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Theme", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(
+                selected = currentTheme == AppTheme.DARK,
+                onClick = { onThemeChange(AppTheme.DARK) },
+                label = { Text("Dark") }
+            )
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = currentTheme == AppTheme.COLORFUL,
+                onClick = { onThemeChange(AppTheme.COLORFUL) },
+                label = { Text("Colourful") }
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
         Divider()
         Spacer(Modifier.height(8.dp))
         Text("Backup & Restore", style = MaterialTheme.typography.titleSmall)
