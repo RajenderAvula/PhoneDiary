@@ -13,5 +13,10 @@ data class LogEntry(
     val durationMillis: Long? = null,
     val note: String? = null,
     val locationUrl: String? = null,
-    val attachmentFileName: String? = null
+    val attachmentFileName: String? = null,
+    // Optional scheduling fields for manual notes.
+    val reminderAtMillis: Long? = null,
+    val dueAtMillis: Long? = null,
+    // "NONE", "DAILY", "WEEKLY", "MONTHLY" — only meaningful when reminderAtMillis is set.
+    val repeatRule: String? = null
 )
