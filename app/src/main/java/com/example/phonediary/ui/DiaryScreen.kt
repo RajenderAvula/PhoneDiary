@@ -37,12 +37,15 @@ import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.VideoCaptureHelper
+import com.example.phonediary.reminders.NoteReminderScheduler
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+
+private enum class DiaryTab { HOME, SETTINGS }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,28 +54,100 @@ fun DiaryScreen(
     onThemeChange: (AppTheme) -> Unit = {}
 ) {
     val context = LocalContext.current
+    var selectedTab by remember { mutableStateOf(DiaryTab.HOME) }
+
+    var newBlockedPackage by remember { mutableStateOf("") }
+    var blockedApps by remember { mutableStateOf(setOf<String>()) }
+
+    LaunchedEffect(Unit) {
+        blockedApps = BlockedAppsStore.getBlockedPackages(context)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(title = { Text("Phone Diary") })
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = selectedTab == DiaryTab.HOME,
+                    onClick = { selectedTab = DiaryTab.HOME },
+                    icon = { Text("🏠") },
+                    label = { Text("Home") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == DiaryTab.SETTINGS,
+                    onClick = { selectedTab = DiaryTab.SETTINGS },
+                    icon = { Text("⚙") },
+                    label = { Text("Settings") }
+                )
+            }
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding)) {
+            when (selectedTab) {
+                DiaryTab.HOME -> HomeTabContent()
+                DiaryTab.SETTINGS -> Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+                    SettingsPanel(
+                        context = context,
+                        blockedApps = blockedApps,
+                        newBlockedPackage = newBlockedPackage,
+                        onNewBlockedPackageChange = { newBlockedPackage = it },
+                        onAddBlocked = {
+                            if (newBlockedPackage.isNotBlank()) {
+                                BlockedAppsStore.addBlockedPackage(context, newBlockedPackage.trim())
+                                blockedApps = BlockedAppsStore.getBlockedPackages(context)
+                                newBlockedPackage = ""
+                            }
+                        },
+                        onRemoveBlocked = { pkg ->
+                            BlockedAppsStore.removeBlockedPackage(context, pkg)
+                            blockedApps = BlockedAppsStore.getBlockedPackages(context)
+                        },
+                        currentTheme = currentTheme,
+                        onThemeChange = onThemeChange
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HomeTabContent() {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val dateTimeFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
     val audioRecorder = remember { AudioRecorderHelper(context) }
 
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
+
     var noteText by remember { mutableStateOf("") }
     var locationText by remember { mutableStateOf("") }
     var pendingAttachments by remember { mutableStateOf(listOf<SavedAttachment>()) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
-    var showSettings by remember { mutableStateOf(false) }
-    var newBlockedPackage by remember { mutableStateOf("") }
-    var blockedApps by remember { mutableStateOf(setOf<String>()) }
+
+    var reminderAtMillis by remember { mutableStateOf<Long?>(null) }
+    var dueAtMillis by remember { mutableStateOf<Long?>(null) }
+    var repeatRule by remember { mutableStateOf("NONE") }
+    var showRepeatMenu by remember { mutableStateOf(false) }
+
     var calendarStatus by remember { mutableStateOf<String?>(null) }
 
     var editingEntryId by remember { mutableStateOf<Long?>(null) }
     var editingNoteText by remember { mutableStateOf("") }
     var editingLocationText by remember { mutableStateOf("") }
     var editingAttachments by remember { mutableStateOf(listOf<String>()) }
+    var editingReminderAtMillis by remember { mutableStateOf<Long?>(null) }
+    var editingDueAtMillis by remember { mutableStateOf<Long?>(null) }
+    var editingRepeatRule by remember { mutableStateOf("NONE") }
+    var showEditRepeatMenu by remember { mutableStateOf(false) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
@@ -134,9 +209,7 @@ fun DiaryScreen(
         if (isRecordingAudio) {
             val saved = audioRecorder.stopRecordingAndSave()
             isRecordingAudio = false
-            if (saved != null) {
-                pendingAttachments = pendingAttachments + saved
-            }
+            if (saved != null) pendingAttachments = pendingAttachments + saved
         } else {
             try {
                 audioRecorder.startRecording()
@@ -214,7 +287,10 @@ fun DiaryScreen(
     fun deleteSelectedEntries(dateKey: String) {
         scope.launch {
             val dao = AppDatabase.getInstance(context).logEntryDao()
-            dayLogEntries.filter { it.id in selectedEntryIds }.forEach { dao.delete(it) }
+            dayLogEntries.filter { it.id in selectedEntryIds }.forEach {
+                NoteReminderScheduler.cancel(context, it.id)
+                dao.delete(it)
+            }
             selectedEntryIds = emptySet()
             selectionMode = false
             openDate(dateKey)
@@ -222,364 +298,366 @@ fun DiaryScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
-        refreshDates()
-        blockedApps = BlockedAppsStore.getBlockedPackages(context)
-    }
+    LaunchedEffect(Unit) { refreshDates() }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Phone Diary") },
-                actions = {
-                    IconButton(onClick = { showSettings = !showSettings }) {
-                        Text("⚙")
-                    }
+    Column(
+        modifier = Modifier
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+
+        // ---- 1. Search ----
+        Text("Search", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it; runSearch(it) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search notes, apps, locations, files…") },
+            singleLine = true,
+            trailingIcon = {
+                if (searchQuery.isNotBlank()) {
+                    TextButton(onClick = { searchQuery = ""; searchResults = null }) { Text("✕") }
                 }
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-
-            if (showSettings) {
-                SettingsPanel(
-                    context = context,
-                    blockedApps = blockedApps,
-                    newBlockedPackage = newBlockedPackage,
-                    onNewBlockedPackageChange = { newBlockedPackage = it },
-                    onAddBlocked = {
-                        if (newBlockedPackage.isNotBlank()) {
-                            BlockedAppsStore.addBlockedPackage(context, newBlockedPackage.trim())
-                            blockedApps = BlockedAppsStore.getBlockedPackages(context)
-                            newBlockedPackage = ""
-                        }
-                    },
-                    onRemoveBlocked = { pkg ->
-                        BlockedAppsStore.removeBlockedPackage(context, pkg)
-                        blockedApps = BlockedAppsStore.getBlockedPackages(context)
-                    },
-                    currentTheme = currentTheme,
-                    onThemeChange = onThemeChange
-                )
-                Divider(modifier = Modifier.padding(vertical = 12.dp))
             }
+        )
 
-            Text("Search", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = {
-                    searchQuery = it
-                    runSearch(it)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search notes, apps, locations, files…") },
-                singleLine = true,
-                trailingIcon = {
-                    if (searchQuery.isNotBlank()) {
-                        TextButton(onClick = {
-                            searchQuery = ""
-                            searchResults = null
-                        }) { Text("✕") }
+        searchResults?.let { results ->
+            Spacer(Modifier.height(8.dp))
+            Text(if (isSearching) "Searching…" else "${results.size} result(s)", style = MaterialTheme.typography.bodySmall)
+            results.forEach { entry ->
+                val entryDateTime = remember(entry.timestampMillis) { dateTimeFormat.format(entry.timestampMillis) }
+                val label = entry.note ?: entry.appName ?: entry.source
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { openDate(entry.dateKey) }.padding(vertical = 6.dp)
+                ) {
+                    Column {
+                        Text(entryDateTime, style = MaterialTheme.typography.bodySmall)
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
-            )
-
-            searchResults?.let { results ->
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    if (isSearching) "Searching…" else "${results.size} result(s)",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                results.forEach { entry ->
-                    val entryDateTime = remember(entry.timestampMillis) {
-                        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(entry.timestampMillis)
-                    }
-                    val label = entry.note ?: entry.appName ?: entry.source
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { openDate(entry.dateKey) }
-                            .padding(vertical = 6.dp)
-                    ) {
-                        Column {
-                            Text(entryDateTime, style = MaterialTheme.typography.bodySmall)
-                            Text(label, style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                    Divider()
-                }
-                Spacer(Modifier.height(8.dp))
                 Divider()
             }
-
-            Spacer(Modifier.height(16.dp))
-            Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
-            Row(verticalAlignment = Alignment.Top) {
-                OutlinedTextField(
-                    value = noteText,
-                    onValueChange = { noteText = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("What are you doing?") },
-                    minLines = 1,
-                    maxLines = 6
-                )
-                Spacer(Modifier.width(8.dp))
-                IconButton(onClick = { startVoiceInput() }) {
-                    Text("🎤")
-                }
-            }
-
             Spacer(Modifier.height(8.dp))
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Divider()
+        Spacer(Modifier.height(16.dp))
+
+        // ---- 2. Calendar ----
+        Text("Calendar", style = MaterialTheme.typography.titleMedium)
+        CalendarMonthView(
+            loggedDates = dates.toSet(),
+            selectedDate = selectedDate,
+            onDayClick = { dateKey -> openDate(dateKey) }
+        )
+
+        Spacer(Modifier.height(16.dp))
+        Divider()
+        Spacer(Modifier.height(16.dp))
+
+        // ---- 3. Add note with attachments + reminder/due/repeat ----
+        Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.Top) {
             OutlinedTextField(
-                value = locationText,
-                onValueChange = { locationText = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Location URL (optional, e.g. maps link)") },
-                singleLine = true
+                value = noteText,
+                onValueChange = { noteText = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("What are you doing?") },
+                minLines = 1,
+                maxLines = 6
             )
+            Spacer(Modifier.width(8.dp))
+            IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
+        }
 
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
-                    Text("Attach files")
-                }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { toggleAudioRecording() }) {
-                    Text(if (isRecordingAudio) "⏹ Stop" else "🎙 Record voice")
-                }
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = locationText,
+            onValueChange = { locationText = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Location URL (optional)") },
+            singleLine = true
+        )
+
+        Spacer(Modifier.height(8.dp))
+        Text("Schedule (optional)", style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = {
+                DateTimePickerUtil.pick(context) { picked -> reminderAtMillis = picked }
+            }) {
+                Text(reminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
             }
-
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = { startVideoCapture() }) {
-                Text("📹 Record video")
+            Spacer(Modifier.width(6.dp))
+            OutlinedButton(onClick = {
+                DateTimePickerUtil.pick(context) { picked -> dueAtMillis = picked }
+            }) {
+                Text(dueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
             }
-
-            if (pendingAttachments.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text("Attachments to save:", style = MaterialTheme.typography.bodySmall)
-                pendingAttachments.forEach { attachment ->
-                    AttachmentPreview(
-                        name = attachment.name,
-                        uri = attachment.uri,
-                        onRemove = {
-                            pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name }
-                        }
-                    )
+        }
+        if (reminderAtMillis != null) {
+            Spacer(Modifier.height(6.dp))
+            Box {
+                OutlinedButton(onClick = { showRepeatMenu = true }) {
+                    Text("🔁 Repeat: ${repeatRule.lowercase().replaceFirstChar { it.uppercase() }}")
                 }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = {
-                if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachments.isNotEmpty()) {
-                    scope.launch {
-                        val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                            .format(System.currentTimeMillis())
-                        AppDatabase.getInstance(context).logEntryDao().insert(
-                            LogEntry(
-                                timestampMillis = System.currentTimeMillis(),
-                                dateKey = todayKey,
-                                source = "manual_note",
-                                note = noteText.ifBlank { null },
-                                locationUrl = locationText.ifBlank { null },
-                                attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name })
-                            )
+                DropdownMenu(expanded = showRepeatMenu, onDismissRequest = { showRepeatMenu = false }) {
+                    listOf("NONE", "DAILY", "WEEKLY", "MONTHLY").forEach { rule ->
+                        DropdownMenuItem(
+                            text = { Text(rule.lowercase().replaceFirstChar { it.uppercase() }) },
+                            onClick = { repeatRule = rule; showRepeatMenu = false }
                         )
-                        CalendarWriter.refreshDate(context, todayKey)
-                        noteText = ""
-                        locationText = ""
-                        pendingAttachments = emptyList()
-                        refreshDates()
-                        if (selectedDate == todayKey) openDate(todayKey)
                     }
                 }
-            }) { Text("Save entry") }
+            }
+        }
 
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) { Text("Attach files") }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(onClick = { toggleAudioRecording() }) {
+                Text(if (isRecordingAudio) "⏹ Stop" else "🎙 Record voice")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = { startVideoCapture() }) { Text("📹 Record video") }
+
+        if (pendingAttachments.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Attachments to save:", style = MaterialTheme.typography.bodySmall)
+            pendingAttachments.forEach { attachment ->
+                AttachmentPreview(
+                    name = attachment.name,
+                    uri = attachment.uri,
+                    onRemove = { pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name } }
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = {
+            if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachments.isNotEmpty()) {
+                scope.launch {
+                    val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(System.currentTimeMillis())
+                    val newId = AppDatabase.getInstance(context).logEntryDao().insert(
+                        LogEntry(
+                            timestampMillis = System.currentTimeMillis(),
+                            dateKey = todayKey,
+                            source = "manual_note",
+                            note = noteText.ifBlank { null },
+                            locationUrl = locationText.ifBlank { null },
+                            attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name }),
+                            reminderAtMillis = reminderAtMillis,
+                            dueAtMillis = dueAtMillis,
+                            repeatRule = if (reminderAtMillis != null) repeatRule else null
+                        )
+                    )
+                    reminderAtMillis?.let { NoteReminderScheduler.schedule(context, newId, it) }
+
+                    CalendarWriter.refreshDate(context, todayKey)
+                    noteText = ""
+                    locationText = ""
+                    pendingAttachments = emptyList()
+                    reminderAtMillis = null
+                    dueAtMillis = null
+                    repeatRule = "NONE"
+                    refreshDates()
+                    if (selectedDate == todayKey) openDate(todayKey)
+                }
+            }
+        }) { Text("Save entry") }
+
+        // ---- 4. Day details: entries, then Send/Open Calendar ----
+        selectedDate?.let { date ->
             Spacer(Modifier.height(16.dp))
             Divider()
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
 
-            Text("Calendar", style = MaterialTheme.typography.titleMedium)
-            CalendarMonthView(
-                loggedDates = dates.toSet(),
-                selectedDate = selectedDate,
-                onDayClick = { dateKey -> openDate(dateKey) }
-            )
-
-            selectedDate?.let { date ->
-                Spacer(Modifier.height(16.dp))
-                Divider()
-                Spacer(Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
-                    if (dayLogEntries.isNotEmpty()) {
-                        TextButton(onClick = {
-                            selectionMode = !selectionMode
-                            selectedEntryIds = emptySet()
-                        }) {
-                            Text(if (selectionMode) "Cancel" else "Select")
-                        }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
+                if (dayLogEntries.isNotEmpty()) {
+                    TextButton(onClick = { selectionMode = !selectionMode; selectedEntryIds = emptySet() }) {
+                        Text(if (selectionMode) "Cancel" else "Select")
                     }
-                }
-
-                if (dayLogEntries.isEmpty()) {
-                    Text("No entries logged for this day yet.")
-                } else {
-                    dayLogEntries.forEach { entry ->
-                        val time = timeFormat.format(entry.timestampMillis)
-                        val displayLabel = when (entry.source) {
-                            "app_usage" -> {
-                                val minutes = (entry.durationMillis ?: 0L) / 60000
-                                "${entry.appName} — ${minutes}m"
-                            }
-                            "screen_content" -> "${entry.appName}${entry.note?.let { " — $it" } ?: ""}"
-                            else -> entry.note ?: entry.source
-                        }
-
-                        if (editingEntryId == entry.id) {
-                            Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                                OutlinedTextField(
-                                    value = editingNoteText,
-                                    onValueChange = { editingNoteText = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    placeholder = { Text("Note") },
-                                    minLines = 1,
-                                    maxLines = 6
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                OutlinedTextField(
-                                    value = editingLocationText,
-                                    onValueChange = { editingLocationText = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    placeholder = { Text("Location URL") },
-                                    singleLine = true
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                Text("Attachments:", style = MaterialTheme.typography.bodySmall)
-                                if (editingAttachments.isEmpty()) {
-                                    Text("None", style = MaterialTheme.typography.bodySmall)
-                                } else {
-                                    editingAttachments.forEach { name ->
-                                        var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
-                                        LaunchedEffect(name) {
-                                            resolvedUri = MediaResolveUtil.resolve(context, name)
-                                        }
-                                        AttachmentPreview(
-                                            name = name,
-                                            uri = resolvedUri,
-                                            onRemove = {
-                                                editingAttachments = editingAttachments.filterNot { it == name }
-                                            }
-                                        )
-                                    }
-                                }
-                                Row {
-                                    TextButton(onClick = {
-                                        scope.launch {
-                                            val updated = entry.copy(
-                                                note = editingNoteText.ifBlank { null },
-                                                locationUrl = editingLocationText.ifBlank { null },
-                                                attachmentFileName = AttachmentListUtil.toStored(editingAttachments)
-                                            )
-                                            AppDatabase.getInstance(context).logEntryDao().update(updated)
-                                            editingEntryId = null
-                                            openDate(date)
-                                            CalendarWriter.refreshDate(context, date)
-                                        }
-                                    }) { Text("Save") }
-                                    TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
-                                }
-                            }
-                        } else {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                if (selectionMode) {
-                                    Checkbox(
-                                        checked = entry.id in selectedEntryIds,
-                                        onCheckedChange = { checked ->
-                                            selectedEntryIds = if (checked) {
-                                                selectedEntryIds + entry.id
-                                            } else {
-                                                selectedEntryIds - entry.id
-                                            }
-                                        }
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            "$time  •  $displayLabel",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        if (!selectionMode) {
-                                            TextButton(onClick = {
-                                                editingEntryId = entry.id
-                                                editingNoteText = entry.note ?: ""
-                                                editingLocationText = entry.locationUrl ?: ""
-                                                editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
-                                            }) { Text("Edit") }
-                                            TextButton(onClick = {
-                                                scope.launch {
-                                                    AppDatabase.getInstance(context).logEntryDao().delete(entry)
-                                                    openDate(date)
-                                                    CalendarWriter.refreshDate(context, date)
-                                                }
-                                            }) { Text("Delete") }
-                                        }
-                                    }
-                                    entry.locationUrl?.let {
-                                        Text("📍 $it", style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
-                                        var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
-                                        LaunchedEffect(name) {
-                                            resolvedUri = MediaResolveUtil.resolve(context, name)
-                                        }
-                                        AttachmentPreview(name = name, uri = resolvedUri)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (selectionMode && selectedEntryIds.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
-                        Button(onClick = { deleteSelectedEntries(date) }) {
-                            Text("Delete selected (${selectedEntryIds.size})")
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-                Row {
-                    Button(onClick = { sendToCalendar(date, dayLogEntries) }) {
-                        Text("Send this day to Calendar")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = { openCalendarApp() }) {
-                        Text("Open Calendar app")
-                    }
-                }
-                calendarStatus?.let { status ->
-                    Text(status, style = MaterialTheme.typography.bodySmall)
                 }
             }
+
+            if (dayLogEntries.isEmpty()) {
+                Text("No entries logged for this day yet.")
+            } else {
+                dayLogEntries.forEach { entry ->
+                    val time = timeFormat.format(entry.timestampMillis)
+                    val displayLabel = when (entry.source) {
+                        "app_usage" -> {
+                            val minutes = (entry.durationMillis ?: 0L) / 60000
+                            "${entry.appName} — ${minutes}m"
+                        }
+                        "screen_content" -> "${entry.appName}${entry.note?.let { " — $it" } ?: ""}"
+                        else -> entry.note ?: entry.source
+                    }
+
+                    if (editingEntryId == entry.id) {
+                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                            OutlinedTextField(
+                                value = editingNoteText,
+                                onValueChange = { editingNoteText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = { Text("Note") },
+                                minLines = 1,
+                                maxLines = 6
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = editingLocationText,
+                                onValueChange = { editingLocationText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = { Text("Location URL") },
+                                singleLine = true
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedButton(onClick = {
+                                    DateTimePickerUtil.pick(context) { picked -> editingReminderAtMillis = picked }
+                                }) {
+                                    Text(editingReminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                OutlinedButton(onClick = {
+                                    DateTimePickerUtil.pick(context) { picked -> editingDueAtMillis = picked }
+                                }) {
+                                    Text(editingDueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
+                                }
+                            }
+                            if (editingReminderAtMillis != null) {
+                                Spacer(Modifier.height(6.dp))
+                                Box {
+                                    OutlinedButton(onClick = { showEditRepeatMenu = true }) {
+                                        Text("🔁 ${editingRepeatRule.lowercase().replaceFirstChar { it.uppercase() }}")
+                                    }
+                                    DropdownMenu(expanded = showEditRepeatMenu, onDismissRequest = { showEditRepeatMenu = false }) {
+                                        listOf("NONE", "DAILY", "WEEKLY", "MONTHLY").forEach { rule ->
+                                            DropdownMenuItem(
+                                                text = { Text(rule.lowercase().replaceFirstChar { it.uppercase() }) },
+                                                onClick = { editingRepeatRule = rule; showEditRepeatMenu = false }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text("Attachments:", style = MaterialTheme.typography.bodySmall)
+                            if (editingAttachments.isEmpty()) {
+                                Text("None", style = MaterialTheme.typography.bodySmall)
+                            } else {
+                                editingAttachments.forEach { name ->
+                                    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
+                                    LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
+                                    AttachmentPreview(
+                                        name = name,
+                                        uri = resolvedUri,
+                                        onRemove = { editingAttachments = editingAttachments.filterNot { it == name } }
+                                    )
+                                }
+                            }
+                            Row {
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        val updated = entry.copy(
+                                            note = editingNoteText.ifBlank { null },
+                                            locationUrl = editingLocationText.ifBlank { null },
+                                            attachmentFileName = AttachmentListUtil.toStored(editingAttachments),
+                                            reminderAtMillis = editingReminderAtMillis,
+                                            dueAtMillis = editingDueAtMillis,
+                                            repeatRule = if (editingReminderAtMillis != null) editingRepeatRule else null
+                                        )
+                                        AppDatabase.getInstance(context).logEntryDao().update(updated)
+                                        NoteReminderScheduler.cancel(context, entry.id)
+                                        editingReminderAtMillis?.let { NoteReminderScheduler.schedule(context, entry.id, it) }
+                                        editingEntryId = null
+                                        openDate(date)
+                                        CalendarWriter.refreshDate(context, date)
+                                    }
+                                }) { Text("Save") }
+                                TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            if (selectionMode) {
+                                Checkbox(
+                                    checked = entry.id in selectedEntryIds,
+                                    onCheckedChange = { checked ->
+                                        selectedEntryIds = if (checked) selectedEntryIds + entry.id else selectedEntryIds - entry.id
+                                    }
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("$time  •  $displayLabel", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                                    if (!selectionMode) {
+                                        TextButton(onClick = {
+                                            editingEntryId = entry.id
+                                            editingNoteText = entry.note ?: ""
+                                            editingLocationText = entry.locationUrl ?: ""
+                                            editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
+                                            editingReminderAtMillis = entry.reminderAtMillis
+                                            editingDueAtMillis = entry.dueAtMillis
+                                            editingRepeatRule = entry.repeatRule ?: "NONE"
+                                        }) { Text("Edit") }
+                                        TextButton(onClick = {
+                                            scope.launch {
+                                                NoteReminderScheduler.cancel(context, entry.id)
+                                                AppDatabase.getInstance(context).logEntryDao().delete(entry)
+                                                openDate(date)
+                                                CalendarWriter.refreshDate(context, date)
+                                            }
+                                        }) { Text("Delete") }
+                                    }
+                                }
+                                entry.locationUrl?.let { Text("📍 $it", style = MaterialTheme.typography.bodySmall) }
+                                entry.reminderAtMillis?.let {
+                                    val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats ${r.lowercase()})" } ?: ""
+                                    Text("⏰ ${dateTimeFormat.format(it)}$repeatSuffix", style = MaterialTheme.typography.bodySmall)
+                                }
+                                entry.dueAtMillis?.let { Text("📅 Due ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall) }
+                                AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
+                                    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
+                                    LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
+                                    AttachmentPreview(name = name, uri = resolvedUri)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (selectionMode && selectedEntryIds.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { deleteSelectedEntries(date) }) {
+                        Text("Delete selected (${selectedEntryIds.size})")
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row {
+                Button(onClick = { sendToCalendar(date, dayLogEntries) }) { Text("Send this day to Calendar") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { openCalendarApp() }) { Text("Open Calendar") }
+            }
+            calendarStatus?.let { status -> Text(status, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
@@ -704,17 +782,9 @@ private fun SettingsPanel(
         Spacer(Modifier.height(8.dp))
         Text("Theme", style = MaterialTheme.typography.titleSmall)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(
-                selected = currentTheme == AppTheme.DARK,
-                onClick = { onThemeChange(AppTheme.DARK) },
-                label = { Text("Dark") }
-            )
+            FilterChip(selected = currentTheme == AppTheme.DARK, onClick = { onThemeChange(AppTheme.DARK) }, label = { Text("Dark") })
             Spacer(Modifier.width(8.dp))
-            FilterChip(
-                selected = currentTheme == AppTheme.COLORFUL,
-                onClick = { onThemeChange(AppTheme.COLORFUL) },
-                label = { Text("Colourful") }
-            )
+            FilterChip(selected = currentTheme == AppTheme.COLORFUL, onClick = { onThemeChange(AppTheme.COLORFUL) }, label = { Text("Colourful") })
         }
 
         Spacer(Modifier.height(12.dp))
@@ -751,9 +821,7 @@ private fun SettingsPanel(
 
         if (lastBackupUri != null && lastBackupName != null) {
             Spacer(Modifier.height(4.dp))
-            OutlinedButton(onClick = {
-                EmailBackupHelper.shareBackupViaEmail(context, lastBackupUri!!, lastBackupName!!)
-            }) {
+            OutlinedButton(onClick = { EmailBackupHelper.shareBackupViaEmail(context, lastBackupUri!!, lastBackupName!!) }) {
                 Text("Email latest backup")
             }
         }
@@ -765,10 +833,7 @@ private fun SettingsPanel(
         ) {
             Text(if (isRestoring) "Restoring…" else "Restore from backup zip")
         }
-        Text(
-            "Pick a .zip from Downloads, or one you saved from a Gmail attachment.",
-            style = MaterialTheme.typography.bodySmall
-        )
+        Text("Pick a .zip from Downloads, or one you saved from a Gmail attachment.", style = MaterialTheme.typography.bodySmall)
         restoreStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
         Spacer(Modifier.height(12.dp))
@@ -777,9 +842,7 @@ private fun SettingsPanel(
 
         Text(if (hasUsagePermission) "Usage access: granted" else "Usage access: not granted")
         if (!hasUsagePermission) {
-            Button(onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) {
-                Text("Grant usage access")
-            }
+            Button(onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text("Grant usage access") }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -787,9 +850,7 @@ private fun SettingsPanel(
 
         Spacer(Modifier.height(8.dp))
         Text("Screen-content logging (Accessibility)")
-        Button(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
-            Text("Open Accessibility settings")
-        }
+        Button(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("Open Accessibility settings") }
         Text("Find 'Phone Diary' in the list and turn it on there.", style = MaterialTheme.typography.bodySmall)
 
         Spacer(Modifier.height(12.dp))
