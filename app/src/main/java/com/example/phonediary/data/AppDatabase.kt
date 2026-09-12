@@ -6,8 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [LogEntry::class, DiaryEntry::class, TaskItem::class],
-    version = 6,
+    entities = [LogEntry::class, DiaryEntry::class],
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
