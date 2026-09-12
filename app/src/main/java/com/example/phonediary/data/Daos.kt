@@ -11,13 +11,16 @@ import androidx.room.Upsert
 interface LogEntryDao {
 
     @Insert
-    suspend fun insert(entry: LogEntry)
+    suspend fun insert(entry: LogEntry): Long
 
     @Update
     suspend fun update(entry: LogEntry)
 
     @Delete
     suspend fun delete(entry: LogEntry)
+
+    @Query("SELECT * FROM log_entries WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): LogEntry?
 
     @Query("SELECT * FROM log_entries WHERE dateKey = :dateKey ORDER BY timestampMillis ASC")
     suspend fun getEntriesForDate(dateKey: String): List<LogEntry>
