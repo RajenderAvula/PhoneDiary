@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Notebook page -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,24 L82,24 L82,88 L34,88 Z" />
+
+    <!-- Spiral binding dots -->
+    <path
+        android:fillColor="#7C6FE0"
+        android:pathData="M38,32 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#7C6FE0"
+        android:pathData="M38,44 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#7C6FE0"
+        android:pathData="M38,56 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#7C6FE0"
+        android:pathData="M38,68 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#7C6FE0"
+        android:pathData="M38,80 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+
+    <!-- Text lines on the page -->
+    <path
+        android:fillColor="#B4AFD2"
+        android:pathData="M46,34 L76,34 L76,37 L46,37 Z" />
+    <path
+        android:fillColor="#B4AFD2"
+        android:pathData="M46,46 L76,46 L76,49 L46,49 Z" />
+    <path
+        android:fillColor="#B4AFD2"
+        android:pathData="M46,58 L76,58 L76,61 L46,61 Z" />
+    <path
+        android:fillColor="#B4AFD2"
+        android:pathData="M46,70 L64,70 L64,73 L46,73 Z" />
+
+    <!-- Clock accent circle, bottom-right of the page -->
+    <path
+        android:fillColor="#7C6FE0"
+        android:pathData="M78,82 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0" />
+
+    <!-- Clock hands -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.6"
+        android:pathData="M78,82 L78,76" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.6"
+        android:pathData="M78,82 L83,82" />
+
+</vector>
