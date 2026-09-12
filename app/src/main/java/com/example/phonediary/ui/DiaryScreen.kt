@@ -46,6 +46,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private enum class DiaryTab { HOME, SETTINGS }
+private enum class ResultMode { NONE, KEYWORD, REMINDER_FILTER, DUE_FILTER }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,9 +65,7 @@ fun DiaryScreen(
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Phone Diary") })
-        },
+        topBar = { TopAppBar(title = { Text("Phone Diary") }) },
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
@@ -119,12 +118,16 @@ private fun HomeTabContent() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val dateTimeFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
+    val dateTimeFormat = remember { SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault()) }
     val audioRecorder = remember { AudioRecorderHelper(context) }
 
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
+
+    // The date+time chosen via tapping a Calendar day (date, then time).
+    // When set, it overrides "now" as the timestamp for the next saved note.
+    var selectedDateTime by remember { mutableStateOf<Long?>(null) }
 
     var noteText by remember { mutableStateOf("") }
     var locationText by remember { mutableStateOf("") }
@@ -153,7 +156,8 @@ private fun HomeTabContent() {
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
 
     var searchQuery by remember { mutableStateOf("") }
-    var searchResults by remember { mutableStateOf<List<LogEntry>?>(null) }
+    var resultMode by remember { mutableStateOf(ResultMode.NONE) }
+    var resultList by remember { mutableStateOf<List<LogEntry>>(emptyList()) }
     var isSearching by remember { mutableStateOf(false) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -245,23 +249,60 @@ private fun HomeTabContent() {
         editingEntryId = null
         selectionMode = false
         selectedEntryIds = emptySet()
-        searchResults = null
+        resultMode = ResultMode.NONE
         searchQuery = ""
         scope.launch {
             dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
         }
     }
 
-    fun runSearch(keyword: String) {
+    // Tapping a calendar day: pick the day, then a time, combine into
+    // selectedDateTime (shown above the note box), and also open that day.
+    fun onCalendarDayClick(dateKey: String) {
+        TimePickerUtil.pickTimeForDate(context, dateKey) { chosenMillis ->
+            selectedDateTime = chosenMillis
+        }
+        openDate(dateKey)
+    }
+
+    fun runKeywordSearch(keyword: String) {
         if (keyword.isBlank()) {
-            searchResults = null
+            resultMode = ResultMode.NONE
+            resultList = emptyList()
             return
         }
+        resultMode = ResultMode.KEYWORD
         isSearching = true
         scope.launch {
-            searchResults = AppDatabase.getInstance(context).logEntryDao().searchEntries(keyword.trim())
+            resultList = AppDatabase.getInstance(context).logEntryDao().searchEntries(keyword.trim())
             isSearching = false
         }
+    }
+
+    fun runReminderFilter() {
+        resultMode = ResultMode.REMINDER_FILTER
+        searchQuery = ""
+        isSearching = true
+        scope.launch {
+            resultList = AppDatabase.getInstance(context).logEntryDao().getEntriesWithReminder()
+            isSearching = false
+        }
+    }
+
+    fun runDueFilter() {
+        resultMode = ResultMode.DUE_FILTER
+        searchQuery = ""
+        isSearching = true
+        scope.launch {
+            resultList = AppDatabase.getInstance(context).logEntryDao().getEntriesWithDueDate()
+            isSearching = false
+        }
+    }
+
+    fun clearResults() {
+        resultMode = ResultMode.NONE
+        resultList = emptyList()
+        searchQuery = ""
     }
 
     fun sendToCalendar(dateKey: String, entries: List<LogEntry>) {
@@ -306,32 +347,54 @@ private fun HomeTabContent() {
             .verticalScroll(rememberScrollState())
     ) {
 
-        // ---- 1. Search ----
+        // ---- 1. Search + filters ----
         Text("Search", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(
             value = searchQuery,
-            onValueChange = { searchQuery = it; runSearch(it) },
+            onValueChange = { searchQuery = it; runKeywordSearch(it) },
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("Search notes, apps, locations, files…") },
             singleLine = true,
             trailingIcon = {
                 if (searchQuery.isNotBlank()) {
-                    TextButton(onClick = { searchQuery = ""; searchResults = null }) { Text("✕") }
+                    TextButton(onClick = { clearResults() }) { Text("✕") }
                 }
             }
         )
 
-        searchResults?.let { results ->
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(
+                selected = resultMode == ResultMode.REMINDER_FILTER,
+                onClick = { if (resultMode == ResultMode.REMINDER_FILTER) clearResults() else runReminderFilter() },
+                label = { Text("🔔 With Reminder") }
+            )
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = resultMode == ResultMode.DUE_FILTER,
+                onClick = { if (resultMode == ResultMode.DUE_FILTER) clearResults() else runDueFilter() },
+                label = { Text("📅 With Due Date") }
+            )
+        }
+
+        if (resultMode != ResultMode.NONE) {
             Spacer(Modifier.height(8.dp))
-            Text(if (isSearching) "Searching…" else "${results.size} result(s)", style = MaterialTheme.typography.bodySmall)
-            results.forEach { entry ->
-                val entryDateTime = remember(entry.timestampMillis) { dateTimeFormat.format(entry.timestampMillis) }
+            Text(
+                if (isSearching) "Loading…" else "${resultList.size} result(s)",
+                style = MaterialTheme.typography.bodySmall
+            )
+            resultList.forEach { entry ->
                 val label = entry.note ?: entry.appName ?: entry.source
+                val subLabel = when (resultMode) {
+                    ResultMode.REMINDER_FILTER -> entry.reminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: ""
+                    ResultMode.DUE_FILTER -> entry.dueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: ""
+                    else -> dateTimeFormat.format(entry.timestampMillis)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable { openDate(entry.dateKey) }.padding(vertical = 6.dp)
                 ) {
                     Column {
-                        Text(entryDateTime, style = MaterialTheme.typography.bodySmall)
+                        Text(subLabel, style = MaterialTheme.typography.bodySmall)
                         Text(label, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
@@ -349,15 +412,30 @@ private fun HomeTabContent() {
         CalendarMonthView(
             loggedDates = dates.toSet(),
             selectedDate = selectedDate,
-            onDayClick = { dateKey -> openDate(dateKey) }
+            onDayClick = { dateKey -> onCalendarDayClick(dateKey) }
         )
 
         Spacer(Modifier.height(16.dp))
         Divider()
         Spacer(Modifier.height(16.dp))
 
-        // ---- 3. Add note with attachments + reminder/due/repeat ----
-        Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
+        // ---- 3. Selected date/time indicator + Add note ----
+        selectedDateTime?.let { picked ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("🕒 Entry will be saved for: ${dateTimeFormat.format(picked)}", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { selectedDateTime = null }) { Text("Clear") }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
+        Text(
+            if (selectedDateTime != null) "Add a note" else "Add a note for today",
+            style = MaterialTheme.typography.titleMedium
+        )
         Row(verticalAlignment = Alignment.Top) {
             OutlinedTextField(
                 value = noteText,
@@ -440,11 +518,13 @@ private fun HomeTabContent() {
         Button(onClick = {
             if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachments.isNotEmpty()) {
                 scope.launch {
-                    val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(System.currentTimeMillis())
+                    val effectiveTimestamp = selectedDateTime ?: System.currentTimeMillis()
+                    val effectiveDateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(effectiveTimestamp)
+
                     val newId = AppDatabase.getInstance(context).logEntryDao().insert(
                         LogEntry(
-                            timestampMillis = System.currentTimeMillis(),
-                            dateKey = todayKey,
+                            timestampMillis = effectiveTimestamp,
+                            dateKey = effectiveDateKey,
                             source = "manual_note",
                             note = noteText.ifBlank { null },
                             locationUrl = locationText.ifBlank { null },
@@ -456,15 +536,16 @@ private fun HomeTabContent() {
                     )
                     reminderAtMillis?.let { NoteReminderScheduler.schedule(context, newId, it) }
 
-                    CalendarWriter.refreshDate(context, todayKey)
+                    CalendarWriter.refreshDate(context, effectiveDateKey)
                     noteText = ""
                     locationText = ""
                     pendingAttachments = emptyList()
                     reminderAtMillis = null
                     dueAtMillis = null
                     repeatRule = "NONE"
+                    selectedDateTime = null
                     refreshDates()
-                    if (selectedDate == todayKey) openDate(todayKey)
+                    if (selectedDate == effectiveDateKey) openDate(effectiveDateKey)
                 }
             }
         }) { Text("Save entry") }
