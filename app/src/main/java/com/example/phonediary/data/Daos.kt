@@ -46,6 +46,12 @@ interface LogEntryDao {
 
     @Query("SELECT * FROM log_entries WHERE dueAtMillis IS NOT NULL ORDER BY dueAtMillis ASC")
     suspend fun getEntriesWithDueDates(): List<LogEntry>
+
+    @Query("SELECT * FROM log_entries WHERE tags LIKE '%' || :tag || '%' ORDER BY timestampMillis DESC")
+    suspend fun getEntriesByTag(tag: String): List<LogEntry>
+
+    @Query("SELECT tags FROM log_entries WHERE tags IS NOT NULL")
+    suspend fun getAllTagStrings(): List<String>
 }
 
 @Dao
