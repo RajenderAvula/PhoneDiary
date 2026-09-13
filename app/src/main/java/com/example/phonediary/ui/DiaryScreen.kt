@@ -50,6 +50,16 @@ import java.util.Locale
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
+private fun repeatDisplayLabel(rule: String): String {
+    if (rule.startsWith("CUSTOM:")) {
+        val millis = rule.removePrefix("CUSTOM:").toLongOrNull() ?: return "Custom"
+        val hours = millis / (60 * 60 * 1000)
+        val days = hours / 24
+        return if (days > 0) "Every ${days}d" else "Every ${hours}h"
+    }
+    return rule.lowercase().replaceFirstChar { it.uppercase() }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiaryScreen(
@@ -306,9 +316,9 @@ private fun HomeTabContent() {
         }
     }
 
-    fun sendToCalendar(dateKey: String, entries: List<LogEntry>) {
+    fun sendToCalendar(dateKey: String) {
         scope.launch {
-            val wrote = CalendarWriter.writeDayLog(context, dateKey, entries)
+            val wrote = CalendarWriter.refreshDate(context, dateKey)
             val targetInfo = CalendarWriter.getTargetCalendarInfo(context)
             calendarStatus = if (wrote) {
                 "Saved to Calendar ✓\n$targetInfo"
@@ -332,16 +342,20 @@ private fun HomeTabContent() {
             dayLogEntries.filter { it.id in selectedEntryIds }.forEach {
                 NoteReminderScheduler.cancelReminder(context, it.id)
                 NoteReminderScheduler.cancelDue(context, it.id)
+                CalendarWriter.deleteEntryEvent(context, it.id)
                 dao.delete(it)
             }
             selectedEntryIds = emptySet()
             selectionMode = false
             openDate(dateKey)
-            CalendarWriter.refreshDate(context, dateKey)
         }
     }
 
     LaunchedEffect(Unit) { refreshDates() }
+
+    // Custom repeat pickers (separate small composables invoked via state below)
+    var showCustomRepeatPicker by remember { mutableStateOf(false) }
+    var showEditCustomRepeatPicker by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -386,23 +400,11 @@ private fun HomeTabContent() {
         Spacer(Modifier.height(8.dp))
         Text("Filter", style = MaterialTheme.typography.bodySmall)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(
-                selected = filterMode == FilterMode.ALL,
-                onClick = { runFilter(FilterMode.ALL) },
-                label = { Text("All") }
-            )
+            FilterChip(selected = filterMode == FilterMode.ALL, onClick = { runFilter(FilterMode.ALL) }, label = { Text("All") })
             Spacer(Modifier.width(6.dp))
-            FilterChip(
-                selected = filterMode == FilterMode.REMINDERS,
-                onClick = { runFilter(FilterMode.REMINDERS) },
-                label = { Text("⏰ Reminders") }
-            )
+            FilterChip(selected = filterMode == FilterMode.REMINDERS, onClick = { runFilter(FilterMode.REMINDERS) }, label = { Text("⏰ Reminders") })
             Spacer(Modifier.width(6.dp))
-            FilterChip(
-                selected = filterMode == FilterMode.DUE_DATES,
-                onClick = { runFilter(FilterMode.DUE_DATES) },
-                label = { Text("📅 Due dates") }
-            )
+            FilterChip(selected = filterMode == FilterMode.DUE_DATES, onClick = { runFilter(FilterMode.DUE_DATES) }, label = { Text("📅 Due dates") })
         }
 
         if (filterMode != FilterMode.ALL) {
@@ -495,7 +497,7 @@ private fun HomeTabContent() {
             Spacer(Modifier.height(6.dp))
             Box {
                 OutlinedButton(onClick = { showRepeatMenu = true }) {
-                    Text("🔁 Repeat: ${repeatRule.lowercase().replaceFirstChar { it.uppercase() }}")
+                    Text("🔁 Repeat: ${repeatDisplayLabel(repeatRule)}")
                 }
                 DropdownMenu(expanded = showRepeatMenu, onDismissRequest = { showRepeatMenu = false }) {
                     listOf("NONE", "DAILY", "WEEKLY", "MONTHLY").forEach { rule ->
@@ -504,6 +506,25 @@ private fun HomeTabContent() {
                             onClick = { repeatRule = rule; showRepeatMenu = false }
                         )
                     }
+                    DropdownMenuItem(
+                        text = { Text("Custom…") },
+                        onClick = {
+                            showRepeatMenu = false
+                            showCustomRepeatPicker = true
+                        }
+                    )
+                }
+            }
+        }
+        if (showCustomRepeatPicker) {
+            LaunchedEffect(Unit) {
+                DateTimePickerUtil.pick(context) { pickedNextTime ->
+                    val base = reminderAtMillis ?: System.currentTimeMillis()
+                    val interval = pickedNextTime - base
+                    if (interval > 0) {
+                        repeatRule = "CUSTOM:$interval"
+                    }
+                    showCustomRepeatPicker = false
                 }
             }
         }
@@ -536,9 +557,10 @@ private fun HomeTabContent() {
         Button(onClick = {
             if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachments.isNotEmpty()) {
                 scope.launch {
-                    val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(System.currentTimeMillis())
+                    val nowMillis = System.currentTimeMillis()
+                    val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(nowMillis)
                     val targetDateKey = selectedDate ?: todayKey
-                    val entryTimestamp = selectedCalendarDateTimeMillis ?: System.currentTimeMillis()
+                    val entryTimestamp = selectedCalendarDateTimeMillis ?: nowMillis
 
                     val newId = AppDatabase.getInstance(context).logEntryDao().insert(
                         LogEntry(
@@ -550,13 +572,17 @@ private fun HomeTabContent() {
                             attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name }),
                             reminderAtMillis = reminderAtMillis,
                             dueAtMillis = dueAtMillis,
-                            repeatRule = if (reminderAtMillis != null) repeatRule else null
+                            repeatRule = if (reminderAtMillis != null) repeatRule else null,
+                            lastModifiedMillis = entryTimestamp
                         )
                     )
                     reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
                     dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, newId, it) }
 
-                    CalendarWriter.refreshDate(context, targetDateKey)
+                    AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
+                        CalendarWriter.refreshEntry(context, it)
+                    }
+
                     noteText = ""
                     locationText = ""
                     pendingAttachments = emptyList()
@@ -639,7 +665,7 @@ private fun HomeTabContent() {
                                 Spacer(Modifier.height(6.dp))
                                 Box {
                                     OutlinedButton(onClick = { showEditRepeatMenu = true }) {
-                                        Text("🔁 ${editingRepeatRule.lowercase().replaceFirstChar { it.uppercase() }}")
+                                        Text("🔁 ${repeatDisplayLabel(editingRepeatRule)}")
                                     }
                                     DropdownMenu(expanded = showEditRepeatMenu, onDismissRequest = { showEditRepeatMenu = false }) {
                                         listOf("NONE", "DAILY", "WEEKLY", "MONTHLY").forEach { rule ->
@@ -648,6 +674,25 @@ private fun HomeTabContent() {
                                                 onClick = { editingRepeatRule = rule; showEditRepeatMenu = false }
                                             )
                                         }
+                                        DropdownMenuItem(
+                                            text = { Text("Custom…") },
+                                            onClick = {
+                                                showEditRepeatMenu = false
+                                                showEditCustomRepeatPicker = true
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            if (showEditCustomRepeatPicker) {
+                                LaunchedEffect(Unit) {
+                                    DateTimePickerUtil.pick(context) { pickedNextTime ->
+                                        val base = editingReminderAtMillis ?: System.currentTimeMillis()
+                                        val interval = pickedNextTime - base
+                                        if (interval > 0) {
+                                            editingRepeatRule = "CUSTOM:$interval"
+                                        }
+                                        showEditCustomRepeatPicker = false
                                     }
                                 }
                             }
@@ -675,16 +720,17 @@ private fun HomeTabContent() {
                                             attachmentFileName = AttachmentListUtil.toStored(editingAttachments),
                                             reminderAtMillis = editingReminderAtMillis,
                                             dueAtMillis = editingDueAtMillis,
-                                            repeatRule = if (editingReminderAtMillis != null) editingRepeatRule else null
+                                            repeatRule = if (editingReminderAtMillis != null) editingRepeatRule else null,
+                                            lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
                                         NoteReminderScheduler.cancelReminder(context, entry.id)
                                         NoteReminderScheduler.cancelDue(context, entry.id)
                                         editingReminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, entry.id, it) }
                                         editingDueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, entry.id, it) }
+                                        CalendarWriter.refreshEntry(context, updated)
                                         editingEntryId = null
                                         openDate(date)
-                                        CalendarWriter.refreshDate(context, date)
                                     }
                                 }) { Text("Save") }
                                 TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
@@ -724,16 +770,16 @@ private fun HomeTabContent() {
                                             scope.launch {
                                                 NoteReminderScheduler.cancelReminder(context, entry.id)
                                                 NoteReminderScheduler.cancelDue(context, entry.id)
+                                                CalendarWriter.deleteEntryEvent(context, entry.id)
                                                 AppDatabase.getInstance(context).logEntryDao().delete(entry)
                                                 openDate(date)
-                                                CalendarWriter.refreshDate(context, date)
                                             }
                                         }) { Text("Delete") }
                                     }
                                 }
                                 entry.locationUrl?.let { Text("📍 $it", style = MaterialTheme.typography.bodySmall) }
                                 entry.reminderAtMillis?.let {
-                                    val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats ${r.lowercase()})" } ?: ""
+                                    val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats: ${repeatDisplayLabel(r)})" } ?: ""
                                     Text("⏰ ${dateTimeFormat.format(it)}$repeatSuffix", style = MaterialTheme.typography.bodySmall)
                                 }
                                 entry.dueAtMillis?.let { Text("📅 Due ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall) }
@@ -757,7 +803,7 @@ private fun HomeTabContent() {
 
             Spacer(Modifier.height(12.dp))
             Row {
-                Button(onClick = { sendToCalendar(date, dayLogEntries) }) { Text("Send this day to Calendar") }
+                Button(onClick = { sendToCalendar(date) }) { Text("Send this day to Calendar") }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = { openCalendarApp() }) { Text("Open Calendar") }
             }
