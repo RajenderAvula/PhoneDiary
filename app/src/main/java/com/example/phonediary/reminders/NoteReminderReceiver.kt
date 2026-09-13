@@ -13,7 +13,6 @@ import com.example.phonediary.data.AppDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.Calendar
 
 class NoteReminderReceiver : BroadcastReceiver() {
 
@@ -87,23 +86,14 @@ class NoteReminderReceiver : BroadcastReceiver() {
         }
     }
 
-    /** Returns null if the repeat rule is malformed, so the caller can skip rescheduling. */
+    /** Repeat rule is always "CUSTOM:<intervalMillis>" or "NONE" in the current model. */
     private fun computeNextTrigger(previousMillis: Long, repeatRule: String): Long? {
         if (repeatRule.startsWith("CUSTOM:")) {
             val intervalMillis = repeatRule.removePrefix("CUSTOM:").toLongOrNull() ?: return null
             if (intervalMillis <= 0) return null
             return previousMillis + intervalMillis
         }
-
-        val cal = Calendar.getInstance()
-        cal.timeInMillis = previousMillis
-        when (repeatRule) {
-            "DAILY" -> cal.add(Calendar.DAY_OF_MONTH, 1)
-            "WEEKLY" -> cal.add(Calendar.DAY_OF_MONTH, 7)
-            "MONTHLY" -> cal.add(Calendar.MONTH, 1)
-            else -> return null
-        }
-        return cal.timeInMillis
+        return null
     }
 
     private fun notificationId(entryId: Long, type: String): Int {
