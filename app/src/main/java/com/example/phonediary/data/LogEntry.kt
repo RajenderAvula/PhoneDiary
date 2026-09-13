@@ -16,9 +16,8 @@ data class LogEntry(
     val attachmentFileName: String? = null,
     val reminderAtMillis: Long? = null,
     val dueAtMillis: Long? = null,
-    // "NONE", "DAILY", "WEEKLY", "MONTHLY", or "CUSTOM:<intervalMillis>"
     val repeatRule: String? = null,
-    // Updated every time the entry is created or edited — this is what
-    // the Calendar event's time now reflects, instead of an all-day block.
-    val lastModifiedMillis: Long = System.currentTimeMillis()
+    val lastModifiedMillis: Long = System.currentTimeMillis(),
+    // "|"-joined tag names, same pattern as attachments — see AttachmentListUtil.
+    val tags: String? = null
 )
