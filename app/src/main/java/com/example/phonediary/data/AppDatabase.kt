@@ -7,13 +7,13 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [LogEntry::class, DiaryEntry::class],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun logEntryDao(): LogEntryDao
     abstract fun diaryEntryDao(): DiaryEntryDao
-    //abstract fun taskItemDao(): TaskItemDao
+   // abstract fun taskItemDao(): TaskItemDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
