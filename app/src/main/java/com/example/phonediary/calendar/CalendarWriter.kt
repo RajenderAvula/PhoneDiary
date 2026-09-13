@@ -127,6 +127,7 @@ object CalendarWriter {
 
     private fun formatLogLines(entries: List<LogEntry>): String {
         val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val dateTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
         return entries.joinToString("\n\n") { entry ->
             val time = timeFormat.format(entry.timestampMillis)
             val baseLine = when (entry.source) {
@@ -145,6 +146,11 @@ object CalendarWriter {
                 AttachmentListUtil.toList(entry.attachmentFileName).forEach {
                     add("Attachment: $it (in Downloads/PhoneDiary or Movies/PhoneDiary)")
                 }
+                entry.reminderAtMillis?.let {
+                    val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats ${r.lowercase()})" } ?: ""
+                    add("Reminder: ${dateTimeFormat.format(it)}$repeatSuffix")
+                }
+                entry.dueAtMillis?.let { add("Due: ${dateTimeFormat.format(it)}") }
             }
 
             if (extras.isEmpty()) baseLine else baseLine + "\n" + extras.joinToString("\n") { "   $it" }
@@ -222,11 +228,6 @@ object CalendarWriter {
         return "Calendar id $id found but details unreadable"
     }
 
-    /**
-     * Records that a backup zip was created — a distinct calendar event
-     * separate from daily diary events, so backups show up as their own
-     * searchable trail in Calendar.
-     */
     fun recordBackupEvent(context: Context, dateKey: String, zipFileName: String, entryCount: Int): Boolean {
         if (!hasCalendarPermission(context)) return false
         val calendarId = findWritableCalendarId(context) ?: return false
