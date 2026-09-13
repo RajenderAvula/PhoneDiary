@@ -44,8 +44,10 @@ class NoteReminderReceiver : BroadcastReceiver() {
                         val previousTime = entry.reminderAtMillis
                         if (repeat != null && repeat != "NONE" && previousTime != null) {
                             val next = computeNextTrigger(previousTime, repeat)
-                            dao.update(entry.copy(reminderAtMillis = next))
-                            NoteReminderScheduler.scheduleReminder(context, entryId, next)
+                            if (next != null) {
+                                dao.update(entry.copy(reminderAtMillis = next))
+                                NoteReminderScheduler.scheduleReminder(context, entryId, next)
+                            }
                         }
                     }
                 }
@@ -85,13 +87,21 @@ class NoteReminderReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun computeNextTrigger(previousMillis: Long, repeatRule: String): Long {
+    /** Returns null if the repeat rule is malformed, so the caller can skip rescheduling. */
+    private fun computeNextTrigger(previousMillis: Long, repeatRule: String): Long? {
+        if (repeatRule.startsWith("CUSTOM:")) {
+            val intervalMillis = repeatRule.removePrefix("CUSTOM:").toLongOrNull() ?: return null
+            if (intervalMillis <= 0) return null
+            return previousMillis + intervalMillis
+        }
+
         val cal = Calendar.getInstance()
         cal.timeInMillis = previousMillis
         when (repeatRule) {
             "DAILY" -> cal.add(Calendar.DAY_OF_MONTH, 1)
             "WEEKLY" -> cal.add(Calendar.DAY_OF_MONTH, 7)
             "MONTHLY" -> cal.add(Calendar.MONTH, 1)
+            else -> return null
         }
         return cal.timeInMillis
     }
@@ -136,9 +146,7 @@ class NoteReminderReceiver : BroadcastReceiver() {
 
     private fun createChannelIfNeeded(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID, "Note Reminders", NotificationManager.IMPORTANCE_HIGH
-            )
+            val channel = NotificationChannel(CHANNEL_ID, "Note Reminders", NotificationManager.IMPORTANCE_HIGH)
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
         }
