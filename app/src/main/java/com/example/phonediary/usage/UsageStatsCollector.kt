@@ -5,6 +5,7 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Process
+import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.LogEntry
 import java.text.SimpleDateFormat
@@ -63,7 +64,8 @@ class UsageStatsCollector(private val context: Context) {
                 )
             )
         }
-        com.example.phonediary.calendar.CalendarWriter.refreshToday(context)
+
+        CalendarWriter.refreshDate(context, dateKey)
     }
 
     private fun startOfTodayMillis(): Long {
