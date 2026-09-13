@@ -23,7 +23,7 @@ object CalendarWriter {
     private const val PREFS_NAME = "phone_diary_calendar_prefs"
     private const val KEY_PINNED_CALENDAR_ID = "pinned_calendar_id"
     private const val TITLE_PREFIX = "PhoneDiaryEntry-"
-    private const val DEFAULT_DURATION_MILLIS = 30L * 60 * 1000 // 30-minute event block
+    private const val DEFAULT_DURATION_MILLIS = 30L * 60 * 1000
 
     fun hasCalendarPermission(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
@@ -123,6 +123,21 @@ object CalendarWriter {
         return null
     }
 
+    private fun describeRepeat(repeatRule: String?): String {
+        if (repeatRule.isNullOrBlank() || repeatRule == "NONE") return ""
+        if (repeatRule.startsWith("CUSTOM:")) {
+            val millis = repeatRule.removePrefix("CUSTOM:").toLongOrNull() ?: return ""
+            val hours = millis / (60 * 60 * 1000)
+            val days = hours / 24
+            return when {
+                days > 0 -> " (repeats every ${days}d)"
+                hours > 0 -> " (repeats every ${hours}h)"
+                else -> " (repeats)"
+            }
+        }
+        return " (repeats ${repeatRule.lowercase()})"
+    }
+
     private fun formatEntryDescription(entry: LogEntry): String {
         val dateTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
         val baseLine = when (entry.source) {
@@ -141,8 +156,7 @@ object CalendarWriter {
                 add("Attachment: $it (in Downloads/PhoneDiary or Movies/PhoneDiary)")
             }
             entry.reminderAtMillis?.let {
-                val repeatLabel = describeRepeat(entry.repeatRule)
-                add("Reminder: ${dateTimeFormat.format(it)}$repeatLabel")
+                add("Reminder: ${dateTimeFormat.format(it)}${describeRepeat(entry.repeatRule)}")
             }
             entry.dueAtMillis?.let { add("Due: ${dateTimeFormat.format(it)}") }
         }
@@ -150,27 +164,16 @@ object CalendarWriter {
         return if (extras.isEmpty()) baseLine else "$baseLine\n" + extras.joinToString("\n") { "  $it" }
     }
 
-    private fun describeRepeat(repeatRule: String?): String {
-        if (repeatRule.isNullOrBlank() || repeatRule == "NONE") return ""
-        if (repeatRule.startsWith("CUSTOM:")) {
-            val millis = repeatRule.removePrefix("CUSTOM:").toLongOrNull() ?: return ""
-            val hours = millis / (60 * 60 * 1000)
-            val days = hours / 24
-            return if (days > 0) " (repeats every ${days}d)" else " (repeats every ${hours}h)"
-        }
-        return " (repeats ${repeatRule.lowercase()})"
-    }
-
     /**
      * Writes (or updates) a single TIMED calendar event for this entry,
-     * anchored to its lastModifiedMillis — not an all-day block. Duration
-     * is a fixed 30-minute window starting at that timestamp.
+     * anchored to timestampMillis — the note's original CREATION time.
+     * Editing the note's text/tags/schedule never moves this event's time.
      */
     fun writeEntryEvent(context: Context, entry: LogEntry): Boolean {
         if (!hasCalendarPermission(context)) return false
         val calendarId = findWritableCalendarId(context) ?: return false
 
-        val startMillis = entry.lastModifiedMillis
+        val startMillis = entry.timestampMillis
         val endMillis = startMillis + DEFAULT_DURATION_MILLIS
 
         val displayTitle = entry.note?.takeIf { it.isNotBlank() }
@@ -179,14 +182,12 @@ object CalendarWriter {
 
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
-            put(CalendarContract.Events.TITLE, entryTitle(entry.id)) // internal unique key
+            put(CalendarContract.Events.TITLE, entryTitle(entry.id))
             put(CalendarContract.Events.DESCRIPTION, formatEntryDescription(entry))
             put(CalendarContract.Events.DTSTART, startMillis)
             put(CalendarContract.Events.DTEND, endMillis)
             put(CalendarContract.Events.ALL_DAY, 0)
             put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
-            // EVENT_LOCATION isn't a real title, but we can store a friendly
-            // display name here since TITLE must stay the stable internal key.
             put(CalendarContract.Events.EVENT_LOCATION, displayTitle)
         }
 
@@ -207,11 +208,6 @@ object CalendarWriter {
         return context.contentResolver.delete(uri, null, null) > 0
     }
 
-    /**
-     * Re-syncs every entry for a given day: writes/updates a timed event
-     * for each current entry, and removes any leftover event for an
-     * entry that's since been deleted from that day.
-     */
     suspend fun refreshDate(context: Context, dateKey: String): Boolean {
         if (!hasCalendarPermission(context)) return false
         val entries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
@@ -225,7 +221,6 @@ object CalendarWriter {
         return allSucceeded
     }
 
-    /** Writes/updates just one entry immediately, without touching the rest of the day. */
     suspend fun refreshEntry(context: Context, entry: LogEntry): Boolean {
         return writeEntryEvent(context, entry)
     }
@@ -289,12 +284,6 @@ object CalendarWriter {
         val title = "Phone Diary Backup - $zipFileName"
         val description = "Backup file: $zipFileName\nLocation: Downloads/PhoneDiary/backups\nEntries included: $entryCount\nCreated: $dateKey"
 
-        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val day = sdf.parse(dateKey) ?: return false
-        val cal = Calendar.getInstance().apply {
-            time = day
-            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0)
-        }
         val startMillis = System.currentTimeMillis()
         val endMillis = startMillis + DEFAULT_DURATION_MILLIS
 
