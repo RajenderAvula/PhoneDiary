@@ -29,6 +29,7 @@ import com.example.phonediary.accessibility.BlockedAppsStore
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.AttachmentListUtil
+import com.example.phonediary.data.AttachmentListUtil as TagListUtil
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.BackupHelper
@@ -171,6 +172,35 @@ private fun HomeTabContent() {
 
     var filterMode by remember { mutableStateOf(FilterMode.ALL) }
     var filteredResults by remember { mutableStateOf<List<LogEntry>>(emptyList()) }
+
+    var showFullScreenEditor by remember { mutableStateOf(false) }
+    var fullScreenEditingEntryId by remember { mutableStateOf<Long?>(null) }
+    var noteTags by remember { mutableStateOf(listOf<String>()) }
+
+    var tagFilter by remember { mutableStateOf<String?>(null) }
+    var tagFilterResults by remember { mutableStateOf<List<LogEntry>>(emptyList()) }
+    var allKnownTags by remember { mutableStateOf(listOf<String>()) }
+
+    var showCustomRepeatPicker by remember { mutableStateOf(false) }
+    var showEditCustomRepeatPicker by remember { mutableStateOf(false) }
+
+    fun loadAllTags() {
+        scope.launch {
+            val raw = AppDatabase.getInstance(context).logEntryDao().getAllTagStrings()
+            allKnownTags = raw.flatMap { TagListUtil.toList(it) }.distinct().sorted()
+        }
+    }
+
+    fun runTagFilter(tag: String?) {
+        tagFilter = tag
+        if (tag == null) {
+            tagFilterResults = emptyList()
+            return
+        }
+        scope.launch {
+            tagFilterResults = AppDatabase.getInstance(context).logEntryDao().getEntriesByTag(tag)
+        }
+    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -351,11 +381,7 @@ private fun HomeTabContent() {
         }
     }
 
-    LaunchedEffect(Unit) { refreshDates() }
-
-    // Custom repeat pickers (separate small composables invoked via state below)
-    var showCustomRepeatPicker by remember { mutableStateOf(false) }
-    var showEditCustomRepeatPicker by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { refreshDates(); loadAllTags() }
 
     Column(
         modifier = Modifier
@@ -428,6 +454,40 @@ private fun HomeTabContent() {
             }
         }
 
+        if (allKnownTags.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Tags", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilterChip(selected = tagFilter == null, onClick = { runTagFilter(null) }, label = { Text("All") })
+                Spacer(Modifier.width(6.dp))
+                allKnownTags.forEach { tag ->
+                    FilterChip(
+                        selected = tagFilter == tag,
+                        onClick = { runTagFilter(tag) },
+                        label = { Text("#$tag") },
+                        modifier = Modifier.padding(end = 6.dp)
+                    )
+                }
+            }
+        }
+
+        if (tagFilter != null) {
+            Spacer(Modifier.height(8.dp))
+            if (tagFilterResults.isEmpty()) {
+                Text("No entries with this tag.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                tagFilterResults.forEach { entry ->
+                    val label = entry.note ?: entry.appName ?: entry.source
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { openDate(entry.dateKey) }.padding(vertical = 6.dp)
+                    ) {
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Divider()
+                }
+            }
+        }
+
         Spacer(Modifier.height(16.dp))
         Divider()
         Spacer(Modifier.height(16.dp))
@@ -467,6 +527,19 @@ private fun HomeTabContent() {
             )
             Spacer(Modifier.width(8.dp))
             IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
+            IconButton(onClick = {
+                fullScreenEditingEntryId = null
+                showFullScreenEditor = true
+            }) { Text("⛶") }
+        }
+
+        if (noteTags.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Row {
+                noteTags.forEach { tag ->
+                    AssistChip(onClick = {}, label = { Text("#$tag") }, modifier = Modifier.padding(end = 4.dp))
+                }
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -573,7 +646,8 @@ private fun HomeTabContent() {
                             reminderAtMillis = reminderAtMillis,
                             dueAtMillis = dueAtMillis,
                             repeatRule = if (reminderAtMillis != null) repeatRule else null,
-                            lastModifiedMillis = entryTimestamp
+                            lastModifiedMillis = entryTimestamp,
+                            tags = TagListUtil.toStored(noteTags)
                         )
                     )
                     reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
@@ -590,7 +664,9 @@ private fun HomeTabContent() {
                     dueAtMillis = null
                     repeatRule = "NONE"
                     selectedCalendarDateTimeMillis = null
+                    noteTags = emptyList()
                     refreshDates()
+                    loadAllTags()
                     openDate(targetDateKey)
                 }
             }
@@ -758,6 +834,10 @@ private fun HomeTabContent() {
                                     Text("$time  •  $displayLabel", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                                     if (!selectionMode) {
                                         TextButton(onClick = {
+                                            fullScreenEditingEntryId = entry.id
+                                            showFullScreenEditor = true
+                                        }) { Text("⛶") }
+                                        TextButton(onClick = {
                                             editingEntryId = entry.id
                                             editingNoteText = entry.note ?: ""
                                             editingLocationText = entry.locationUrl ?: ""
@@ -773,11 +853,16 @@ private fun HomeTabContent() {
                                                 CalendarWriter.deleteEntryEvent(context, entry.id)
                                                 AppDatabase.getInstance(context).logEntryDao().delete(entry)
                                                 openDate(date)
+                                                loadAllTags()
                                             }
                                         }) { Text("Delete") }
                                     }
                                 }
                                 entry.locationUrl?.let { Text("📍 $it", style = MaterialTheme.typography.bodySmall) }
+                                val entryTagList = TagListUtil.toList(entry.tags)
+                                if (entryTagList.isNotEmpty()) {
+                                    Text(entryTagList.joinToString(" ") { "#$it" }, style = MaterialTheme.typography.bodySmall)
+                                }
                                 entry.reminderAtMillis?.let {
                                     val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats: ${repeatDisplayLabel(r)})" } ?: ""
                                     Text("⏰ ${dateTimeFormat.format(it)}$repeatSuffix", style = MaterialTheme.typography.bodySmall)
@@ -809,6 +894,47 @@ private fun HomeTabContent() {
             }
             calendarStatus?.let { status -> Text(status, style = MaterialTheme.typography.bodySmall) }
         }
+    }
+
+    if (showFullScreenEditor) {
+        val editingId = fullScreenEditingEntryId
+        var loadedEntry by remember(editingId) { mutableStateOf<LogEntry?>(null) }
+
+        LaunchedEffect(editingId) {
+            loadedEntry = if (editingId != null) {
+                AppDatabase.getInstance(context).logEntryDao().getById(editingId)
+            } else null
+        }
+
+        val initialText = if (editingId == null) noteText else (loadedEntry?.note ?: "")
+        val initialTags = if (editingId == null) noteTags else TagListUtil.toList(loadedEntry?.tags)
+
+        FullScreenNoteEditor(
+            initialText = initialText,
+            initialTags = initialTags,
+            onSave = { text, tags ->
+                if (editingId == null) {
+                    noteText = text
+                    noteTags = tags
+                } else {
+                    scope.launch {
+                        loadedEntry?.let { entry ->
+                            val updated = entry.copy(
+                                note = text.ifBlank { null },
+                                tags = TagListUtil.toStored(tags),
+                                lastModifiedMillis = System.currentTimeMillis()
+                            )
+                            AppDatabase.getInstance(context).logEntryDao().update(updated)
+                            CalendarWriter.refreshEntry(context, updated)
+                            loadAllTags()
+                            selectedDate?.let { openDate(it) }
+                        }
+                    }
+                }
+                showFullScreenEditor = false
+            },
+            onDismiss = { showFullScreenEditor = false }
+        )
     }
 }
 
