@@ -14,9 +14,11 @@ data class LogEntry(
     val note: String? = null,
     val locationUrl: String? = null,
     val attachmentFileName: String? = null,
-    // Optional scheduling fields for manual notes.
     val reminderAtMillis: Long? = null,
     val dueAtMillis: Long? = null,
-    // "NONE", "DAILY", "WEEKLY", "MONTHLY" — only meaningful when reminderAtMillis is set.
-    val repeatRule: String? = null
+    // "NONE", "DAILY", "WEEKLY", "MONTHLY", or "CUSTOM:<intervalMillis>"
+    val repeatRule: String? = null,
+    // Updated every time the entry is created or edited — this is what
+    // the Calendar event's time now reflects, instead of an all-day block.
+    val lastModifiedMillis: Long = System.currentTimeMillis()
 )
