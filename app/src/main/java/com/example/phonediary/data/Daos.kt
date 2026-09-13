@@ -42,10 +42,10 @@ interface LogEntryDao {
     suspend fun searchEntries(keyword: String): List<LogEntry>
 
     @Query("SELECT * FROM log_entries WHERE reminderAtMillis IS NOT NULL ORDER BY reminderAtMillis ASC")
-    suspend fun getEntriesWithReminder(): List<LogEntry>
+    suspend fun getEntriesWithReminders(): List<LogEntry>
 
     @Query("SELECT * FROM log_entries WHERE dueAtMillis IS NOT NULL ORDER BY dueAtMillis ASC")
-    suspend fun getEntriesWithDueDate(): List<LogEntry>
+    suspend fun getEntriesWithDueDates(): List<LogEntry>
 }
 
 @Dao
