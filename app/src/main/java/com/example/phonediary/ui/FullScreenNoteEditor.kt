@@ -1,11 +1,9 @@
 package com.example.phonediary.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Print
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -41,15 +39,15 @@ fun FullScreenNoteEditor(
             TopAppBar(
                 title = { Text("Note") },
                 navigationIcon = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    TextButton(onClick = onDismiss) {
+                        Text("← Back")
                     }
                 },
                 actions = {
-                    IconButton(onClick = {
+                    TextButton(onClick = {
                         NotePrintHelper.printNote(context, "Phone Diary Note", text, tags)
                     }) {
-                        Icon(Icons.Default.Print, contentDescription = "Print")
+                        Text("🖨 Print")
                     }
                     TextButton(onClick = { onSave(text, tags) }) {
                         Text("Save")
