@@ -52,11 +52,16 @@ private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
 private fun repeatDisplayLabel(rule: String): String {
+    if (rule == "NONE" || rule.isBlank()) return "None"
     if (rule.startsWith("CUSTOM:")) {
         val millis = rule.removePrefix("CUSTOM:").toLongOrNull() ?: return "Custom"
         val hours = millis / (60 * 60 * 1000)
         val days = hours / 24
-        return if (days > 0) "Every ${days}d" else "Every ${hours}h"
+        return when {
+            days > 0 -> "Every ${days}d"
+            hours > 0 -> "Every ${hours}h"
+            else -> "Custom"
+        }
     }
     return rule.lowercase().replaceFirstChar { it.uppercase() }
 }
@@ -150,7 +155,6 @@ private fun HomeTabContent() {
     var reminderAtMillis by remember { mutableStateOf<Long?>(null) }
     var dueAtMillis by remember { mutableStateOf<Long?>(null) }
     var repeatRule by remember { mutableStateOf("NONE") }
-    var showRepeatMenu by remember { mutableStateOf(false) }
 
     var calendarStatus by remember { mutableStateOf<String?>(null) }
 
@@ -161,7 +165,6 @@ private fun HomeTabContent() {
     var editingReminderAtMillis by remember { mutableStateOf<Long?>(null) }
     var editingDueAtMillis by remember { mutableStateOf<Long?>(null) }
     var editingRepeatRule by remember { mutableStateOf("NONE") }
-    var showEditRepeatMenu by remember { mutableStateOf(false) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
@@ -180,9 +183,6 @@ private fun HomeTabContent() {
     var tagFilter by remember { mutableStateOf<String?>(null) }
     var tagFilterResults by remember { mutableStateOf<List<LogEntry>>(emptyList()) }
     var allKnownTags by remember { mutableStateOf(listOf<String>()) }
-
-    var showCustomRepeatPicker by remember { mutableStateOf(false) }
-    var showEditCustomRepeatPicker by remember { mutableStateOf(false) }
 
     fun loadAllTags() {
         scope.launch {
@@ -565,40 +565,19 @@ private fun HomeTabContent() {
             }) {
                 Text(dueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
             }
-        }
-        if (reminderAtMillis != null) {
-            Spacer(Modifier.height(6.dp))
-            Box {
-                OutlinedButton(onClick = { showRepeatMenu = true }) {
-                    Text("🔁 Repeat: ${repeatDisplayLabel(repeatRule)}")
+            Spacer(Modifier.width(6.dp))
+            OutlinedButton(onClick = {
+                DateTimePickerUtil.pick(context) { picked ->
+                    val base = reminderAtMillis ?: dueAtMillis ?: System.currentTimeMillis()
+                    val interval = picked - base
+                    if (interval > 0) repeatRule = "CUSTOM:$interval"
                 }
-                DropdownMenu(expanded = showRepeatMenu, onDismissRequest = { showRepeatMenu = false }) {
-                    listOf("NONE", "DAILY", "WEEKLY", "MONTHLY").forEach { rule ->
-                        DropdownMenuItem(
-                            text = { Text(rule.lowercase().replaceFirstChar { it.uppercase() }) },
-                            onClick = { repeatRule = rule; showRepeatMenu = false }
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = { Text("Custom…") },
-                        onClick = {
-                            showRepeatMenu = false
-                            showCustomRepeatPicker = true
-                        }
-                    )
-                }
+            }) {
+                Text(if (repeatRule != "NONE") "🔁 ${repeatDisplayLabel(repeatRule)}" else "🔁 Repeat")
             }
-        }
-        if (showCustomRepeatPicker) {
-            LaunchedEffect(Unit) {
-                DateTimePickerUtil.pick(context) { pickedNextTime ->
-                    val base = reminderAtMillis ?: System.currentTimeMillis()
-                    val interval = pickedNextTime - base
-                    if (interval > 0) {
-                        repeatRule = "CUSTOM:$interval"
-                    }
-                    showCustomRepeatPicker = false
-                }
+            if (repeatRule != "NONE") {
+                Spacer(Modifier.width(4.dp))
+                TextButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
             }
         }
 
@@ -736,40 +715,19 @@ private fun HomeTabContent() {
                                 }) {
                                     Text(editingDueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
                                 }
-                            }
-                            if (editingReminderAtMillis != null) {
-                                Spacer(Modifier.height(6.dp))
-                                Box {
-                                    OutlinedButton(onClick = { showEditRepeatMenu = true }) {
-                                        Text("🔁 ${repeatDisplayLabel(editingRepeatRule)}")
+                                Spacer(Modifier.width(6.dp))
+                                OutlinedButton(onClick = {
+                                    DateTimePickerUtil.pick(context) { picked ->
+                                        val base = editingReminderAtMillis ?: editingDueAtMillis ?: System.currentTimeMillis()
+                                        val interval = picked - base
+                                        if (interval > 0) editingRepeatRule = "CUSTOM:$interval"
                                     }
-                                    DropdownMenu(expanded = showEditRepeatMenu, onDismissRequest = { showEditRepeatMenu = false }) {
-                                        listOf("NONE", "DAILY", "WEEKLY", "MONTHLY").forEach { rule ->
-                                            DropdownMenuItem(
-                                                text = { Text(rule.lowercase().replaceFirstChar { it.uppercase() }) },
-                                                onClick = { editingRepeatRule = rule; showEditRepeatMenu = false }
-                                            )
-                                        }
-                                        DropdownMenuItem(
-                                            text = { Text("Custom…") },
-                                            onClick = {
-                                                showEditRepeatMenu = false
-                                                showEditCustomRepeatPicker = true
-                                            }
-                                        )
-                                    }
+                                }) {
+                                    Text(if (editingRepeatRule != "NONE") "🔁 ${repeatDisplayLabel(editingRepeatRule)}" else "🔁 Repeat")
                                 }
-                            }
-                            if (showEditCustomRepeatPicker) {
-                                LaunchedEffect(Unit) {
-                                    DateTimePickerUtil.pick(context) { pickedNextTime ->
-                                        val base = editingReminderAtMillis ?: System.currentTimeMillis()
-                                        val interval = pickedNextTime - base
-                                        if (interval > 0) {
-                                            editingRepeatRule = "CUSTOM:$interval"
-                                        }
-                                        showEditCustomRepeatPicker = false
-                                    }
+                                if (editingRepeatRule != "NONE") {
+                                    Spacer(Modifier.width(4.dp))
+                                    TextButton(onClick = { editingRepeatRule = "NONE" }) { Text("✕") }
                                 }
                             }
                             Spacer(Modifier.height(4.dp))
