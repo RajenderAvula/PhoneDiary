@@ -186,7 +186,7 @@ fun FullScreenNoteEditor(
                     .weight(1f),
                 placeholder = { Text("Write your note…") },
                 visualTransformation = if (!highlightQuery.isNullOrBlank()) {
-                    HighlightTransformation(highlightQuery)
+                    rememberThemedHighlight(highlightQuery)
                 } else {
                     VisualTransformation.None
                 }
@@ -254,23 +254,25 @@ fun FullScreenNoteEditor(
                 }
             }
             Spacer(Modifier.height(6.dp))
+            var showRepeatDialogFS by remember { mutableStateOf(false) }
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
-                    onClick = {
-                        DateTimePickerUtil.pick(context) { picked ->
-                            val base = reminderAtMillis ?: dueAtMillis ?: System.currentTimeMillis()
-                            val interval = picked - base
-                            if (interval > 0) repeatRule = "CUSTOM:$interval"
-                        }
-                    }
+                    onClick = { showRepeatDialogFS = true }
                 ) {
-                    Text(if (repeatRule != "NONE") "🔁 ${repeatDisplayLabelPublic(repeatRule)}" else "🔁 Repeat")
+                    Text(if (repeatRule != "NONE") "🔁 ${repeatDisplayLabel2(repeatRule)}" else "🔁 Repeat")
                 }
                 if (repeatRule != "NONE") {
                     Spacer(Modifier.width(4.dp))
                     OutlinedButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
                 }
+            }
+            if (showRepeatDialogFS) {
+                RepeatPickerDialog(
+                    initial = RepeatConfig.fromStored(repeatRule),
+                    onConfirm = { config -> repeatRule = config.toStored(); showRepeatDialogFS = false },
+                    onDismiss = { showRepeatDialogFS = false }
+                )
             }
 
             Spacer(Modifier.height(12.dp))
@@ -309,7 +311,7 @@ fun FullScreenNoteEditor(
 }
 
 /** Exposed so this file doesn't depend on DiaryScreen.kt's private label function. */
-fun repeatDisplayLabelPublic(rule: String): String {
+/* fun repeatDisplayLabelPublic(rule: String): String {
     if (rule == "NONE" || rule.isBlank()) return "None"
     if (rule.startsWith("CUSTOM:")) {
         val millis = rule.removePrefix("CUSTOM:").toLongOrNull() ?: return "Custom"
