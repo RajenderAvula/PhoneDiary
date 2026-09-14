@@ -53,8 +53,6 @@ import java.util.Locale
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
-private fun repeatDisplayLabel(rule: String): String = repeatDisplayLabelPublic(rule)
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiaryScreen(
@@ -128,6 +126,9 @@ private fun HomeTabContent() {
     val dateTimeFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
     val audioRecorder = remember { AudioRecorderHelper(context) }
 
+    val highlightBg = MaterialTheme.colorScheme.primary
+    val highlightFg = MaterialTheme.colorScheme.onPrimary
+
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
@@ -143,7 +144,8 @@ private fun HomeTabContent() {
 
     var reminderAtMillis by remember { mutableStateOf<Long?>(null) }
     var dueAtMillis by remember { mutableStateOf<Long?>(null) }
-    var repeatRule by remember { mutableStateOf("NONE") }
+    var repeatConfig by remember { mutableStateOf(RepeatConfig.NONE) }
+    var showRepeatDialog by remember { mutableStateOf(false) }
 
     var calendarStatus by remember { mutableStateOf<String?>(null) }
 
@@ -153,7 +155,8 @@ private fun HomeTabContent() {
     var editingAttachments by remember { mutableStateOf(listOf<String>()) }
     var editingReminderAtMillis by remember { mutableStateOf<Long?>(null) }
     var editingDueAtMillis by remember { mutableStateOf<Long?>(null) }
-    var editingRepeatRule by remember { mutableStateOf("NONE") }
+    var editingRepeatConfig by remember { mutableStateOf(RepeatConfig.NONE) }
+    var showEditRepeatDialog by remember { mutableStateOf(false) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
@@ -174,6 +177,10 @@ private fun HomeTabContent() {
     var tagFilter by remember { mutableStateOf<String?>(null) }
     var tagFilterResults by remember { mutableStateOf<List<LogEntry>>(emptyList()) }
     var allKnownTags by remember { mutableStateOf(listOf<String>()) }
+
+    // Delete confirmation state
+    var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
+    var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
 
     fun loadAllTags() {
         scope.launch {
@@ -207,7 +214,7 @@ private fun HomeTabContent() {
         pendingAttachments = emptyList()
         reminderAtMillis = null
         dueAtMillis = null
-        repeatRule = "NONE"
+        repeatConfig = RepeatConfig.NONE
         selectedCalendarDateTimeMillis = null
         noteTags = emptyList()
         mainTagInput = ""
@@ -376,7 +383,7 @@ private fun HomeTabContent() {
         context.startActivity(Intent(Intent.ACTION_VIEW).setData(builder.build()))
     }
 
-    fun deleteSelectedEntries(dateKey: String) {
+    fun performDeleteSelectedEntries(dateKey: String) {
         scope.launch {
             val dao = AppDatabase.getInstance(context).logEntryDao()
             dayLogEntries.filter { it.id in selectedEntryIds }.forEach {
@@ -388,6 +395,17 @@ private fun HomeTabContent() {
             selectedEntryIds = emptySet()
             selectionMode = false
             openDate(dateKey)
+        }
+    }
+
+    fun performDeleteEntry(entry: LogEntry, dateKey: String) {
+        scope.launch {
+            NoteReminderScheduler.cancelReminder(context, entry.id)
+            NoteReminderScheduler.cancelDue(context, entry.id)
+            CalendarWriter.deleteEntryEvent(context, entry.id)
+            AppDatabase.getInstance(context).logEntryDao().delete(entry)
+            openDate(dateKey)
+            loadAllTags()
         }
     }
 
@@ -426,6 +444,9 @@ private fun HomeTabContent() {
             results.forEach { entry ->
                 val entryDateTime = remember(entry.timestampMillis) { dateTimeFormat.format(entry.timestampMillis) }
                 val label = entry.note ?: entry.appName ?: entry.source
+                val highlighted = remember(label, searchQuery) {
+                    buildHighlightedString(label, searchQuery, highlightBg, highlightFg)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clickable { openNoteInFullScreen(entry.id, searchQuery) }
@@ -433,7 +454,7 @@ private fun HomeTabContent() {
                 ) {
                     Column {
                         Text(entryDateTime, style = MaterialTheme.typography.bodySmall)
-                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                        Text(highlighted, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
                 Divider()
@@ -635,20 +656,21 @@ private fun HomeTabContent() {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(
                 modifier = Modifier.weight(1f),
-                onClick = {
-                    DateTimePickerUtil.pick(context) { picked ->
-                        val base = reminderAtMillis ?: dueAtMillis ?: System.currentTimeMillis()
-                        val interval = picked - base
-                        if (interval > 0) repeatRule = "CUSTOM:$interval"
-                    }
-                }
+                onClick = { showRepeatDialog = true }
             ) {
-                Text(if (repeatRule != "NONE") "🔁 ${repeatDisplayLabel(repeatRule)}" else "🔁 Repeat")
+                Text(if (repeatConfig.type != "NONE") "🔁 ${repeatDisplayLabel2(repeatConfig.toStored())}" else "🔁 Repeat")
             }
-            if (repeatRule != "NONE") {
+            if (repeatConfig.type != "NONE") {
                 Spacer(Modifier.width(6.dp))
-                OutlinedButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
+                OutlinedButton(onClick = { repeatConfig = RepeatConfig.NONE }) { Text("✕") }
             }
+        }
+        if (showRepeatDialog) {
+            RepeatPickerDialog(
+                initial = repeatConfig,
+                onConfirm = { config -> repeatConfig = config; showRepeatDialog = false },
+                onDismiss = { showRepeatDialog = false }
+            )
         }
 
         Spacer(Modifier.height(8.dp))
@@ -695,7 +717,7 @@ private fun HomeTabContent() {
                                 attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name }),
                                 reminderAtMillis = reminderAtMillis,
                                 dueAtMillis = dueAtMillis,
-                                repeatRule = if (reminderAtMillis != null || dueAtMillis != null) repeatRule else null,
+                                repeatRule = if (reminderAtMillis != null || dueAtMillis != null) repeatConfig.toStored() else null,
                                 lastModifiedMillis = entryTimestamp,
                                 tags = TagListUtil.toStored(noteTags)
                             )
@@ -799,20 +821,21 @@ private fun HomeTabContent() {
                             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 OutlinedButton(
                                     modifier = Modifier.weight(1f),
-                                    onClick = {
-                                        DateTimePickerUtil.pick(context) { picked ->
-                                            val base = editingReminderAtMillis ?: editingDueAtMillis ?: System.currentTimeMillis()
-                                            val interval = picked - base
-                                            if (interval > 0) editingRepeatRule = "CUSTOM:$interval"
-                                        }
-                                    }
+                                    onClick = { showEditRepeatDialog = true }
                                 ) {
-                                    Text(if (editingRepeatRule != "NONE") "🔁 ${repeatDisplayLabel(editingRepeatRule)}" else "🔁 Repeat")
+                                    Text(if (editingRepeatConfig.type != "NONE") "🔁 ${repeatDisplayLabel2(editingRepeatConfig.toStored())}" else "🔁 Repeat")
                                 }
-                                if (editingRepeatRule != "NONE") {
+                                if (editingRepeatConfig.type != "NONE") {
                                     Spacer(Modifier.width(6.dp))
-                                    OutlinedButton(onClick = { editingRepeatRule = "NONE" }) { Text("✕") }
+                                    OutlinedButton(onClick = { editingRepeatConfig = RepeatConfig.NONE }) { Text("✕") }
                                 }
+                            }
+                            if (showEditRepeatDialog) {
+                                RepeatPickerDialog(
+                                    initial = editingRepeatConfig,
+                                    onConfirm = { config -> editingRepeatConfig = config; showEditRepeatDialog = false },
+                                    onDismiss = { showEditRepeatDialog = false }
+                                )
                             }
                             Spacer(Modifier.height(4.dp))
                             Text("Attachments:", style = MaterialTheme.typography.bodySmall)
@@ -838,7 +861,7 @@ private fun HomeTabContent() {
                                             attachmentFileName = AttachmentListUtil.toStored(editingAttachments),
                                             reminderAtMillis = editingReminderAtMillis,
                                             dueAtMillis = editingDueAtMillis,
-                                            repeatRule = if (editingReminderAtMillis != null || editingDueAtMillis != null) editingRepeatRule else null,
+                                            repeatRule = if (editingReminderAtMillis != null || editingDueAtMillis != null) editingRepeatConfig.toStored() else null,
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
@@ -883,18 +906,9 @@ private fun HomeTabContent() {
                                             editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
                                             editingReminderAtMillis = entry.reminderAtMillis
                                             editingDueAtMillis = entry.dueAtMillis
-                                            editingRepeatRule = entry.repeatRule ?: "NONE"
+                                            editingRepeatConfig = RepeatConfig.fromStored(entry.repeatRule)
                                         }) { Text("Edit") }
-                                        TextButton(onClick = {
-                                            scope.launch {
-                                                NoteReminderScheduler.cancelReminder(context, entry.id)
-                                                NoteReminderScheduler.cancelDue(context, entry.id)
-                                                CalendarWriter.deleteEntryEvent(context, entry.id)
-                                                AppDatabase.getInstance(context).logEntryDao().delete(entry)
-                                                openDate(date)
-                                                loadAllTags()
-                                            }
-                                        }) { Text("Delete") }
+                                        TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
                                     }
                                 }
                                 entry.locationUrl?.let { Text("📍 $it", style = MaterialTheme.typography.bodySmall) }
@@ -903,7 +917,7 @@ private fun HomeTabContent() {
                                     Text(entryTagList.joinToString(" ") { "#$it" }, style = MaterialTheme.typography.bodySmall)
                                 }
                                 entry.reminderAtMillis?.let {
-                                    val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats: ${repeatDisplayLabel(r)})" } ?: ""
+                                    val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats: ${repeatDisplayLabel2(r)})" } ?: ""
                                     Text("⏰ ${dateTimeFormat.format(it)}$repeatSuffix", style = MaterialTheme.typography.bodySmall)
                                 }
                                 entry.dueAtMillis?.let { Text("📅 Due ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall) }
@@ -919,7 +933,7 @@ private fun HomeTabContent() {
 
                 if (selectionMode && selectedEntryIds.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = { deleteSelectedEntries(date) }) {
+                    Button(onClick = { confirmDeleteSelectedForDate = date }) {
                         Text("Delete selected (${selectedEntryIds.size})")
                     }
                 }
@@ -935,6 +949,28 @@ private fun HomeTabContent() {
         }
     }
 
+    confirmDeleteEntry?.let { entry ->
+        ConfirmDeleteDialog(
+            message = "Delete this entry? This cannot be undone.",
+            onConfirm = {
+                selectedDate?.let { performDeleteEntry(entry, it) }
+                confirmDeleteEntry = null
+            },
+            onDismiss = { confirmDeleteEntry = null }
+        )
+    }
+
+    confirmDeleteSelectedForDate?.let { dateKey ->
+        ConfirmDeleteDialog(
+            message = "Delete ${selectedEntryIds.size} selected entries? This cannot be undone.",
+            onConfirm = {
+                performDeleteSelectedEntries(dateKey)
+                confirmDeleteSelectedForDate = null
+            },
+            onDismiss = { confirmDeleteSelectedForDate = null }
+        )
+    }
+
     if (showFullScreenEditor) {
         val editingId = fullScreenEditingEntryId
         var loadedEntry by remember(editingId) { mutableStateOf<LogEntry?>(null) }
@@ -947,8 +983,6 @@ private fun HomeTabContent() {
             }
         }
 
-        // Wait for the real data before showing the editor, so it never
-        // opens blank while the existing note is still loading.
         if (isLoaded) {
             val initialText = if (editingId == null) noteText else (loadedEntry?.note ?: "")
             val initialLocation = if (editingId == null) locationText else (loadedEntry?.locationUrl ?: "")
@@ -956,7 +990,7 @@ private fun HomeTabContent() {
             val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName)
             val initialReminder = if (editingId == null) reminderAtMillis else loadedEntry?.reminderAtMillis
             val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
-            val initialRepeat = if (editingId == null) repeatRule else (loadedEntry?.repeatRule ?: "NONE")
+            val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
 
             FullScreenNoteEditor(
                 initialText = initialText,
@@ -969,14 +1003,13 @@ private fun HomeTabContent() {
                 highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
                 onSave = { result ->
                     if (editingId == null) {
-                        // Feed back into the main composer fields.
                         noteText = result.text
                         locationText = result.locationUrl
                         noteTags = result.tags
                         pendingAttachments = pendingAttachments + result.newAttachments
                         reminderAtMillis = result.reminderAtMillis
                         dueAtMillis = result.dueAtMillis
-                        repeatRule = result.repeatRule
+                        repeatConfig = RepeatConfig.fromStored(result.repeatRule)
                     } else {
                         scope.launch {
                             loadedEntry?.let { entry ->
@@ -1114,23 +1147,12 @@ private fun SettingsPanel(
 
     var restoreStatus by remember { mutableStateOf<String?>(null) }
     var isRestoring by remember { mutableStateOf(false) }
+    var confirmRestoreUri by remember { mutableStateOf<Uri?>(null) }
 
     val restorePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) {
-            isRestoring = true
-            restoreStatus = null
-            scope.launch {
-                val result = RestoreHelper.restoreFromZip(context, uri)
-                restoreStatus = if (result != null) {
-                    "Restored ${result.entriesRestored} entries, ${result.attachmentsRestored} files ✓"
-                } else {
-                    "Restore failed — make sure you picked a Phone Diary backup zip"
-                }
-                isRestoring = false
-            }
-        }
+        if (uri != null) confirmRestoreUri = uri
     }
 
     Column {
@@ -1223,6 +1245,27 @@ private fun SettingsPanel(
         }
         Text("Pick a .zip from Downloads, or one you saved from a Gmail attachment.", style = MaterialTheme.typography.bodySmall)
         restoreStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        confirmRestoreUri?.let { uri ->
+            ConfirmDeleteDialog(
+                message = "Restoring will add all entries from this backup into your current data. Continue?",
+                onConfirm = {
+                    confirmRestoreUri = null
+                    isRestoring = true
+                    restoreStatus = null
+                    scope.launch {
+                        val result = RestoreHelper.restoreFromZip(context, uri)
+                        restoreStatus = if (result != null) {
+                            "Restored ${result.entriesRestored} entries, ${result.attachmentsRestored} files ✓"
+                        } else {
+                            "Restore failed — make sure you picked a Phone Diary backup zip"
+                        }
+                        isRestoring = false
+                    }
+                },
+                onDismiss = { confirmRestoreUri = null }
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
         Divider()
