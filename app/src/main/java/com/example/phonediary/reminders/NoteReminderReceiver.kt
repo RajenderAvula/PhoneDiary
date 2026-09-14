@@ -17,13 +17,6 @@ import kotlinx.coroutines.launch
 class NoteReminderReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        when (intent.action) {
-            ACTION_SNOOZE -> handleSnooze(context, intent)
-            else -> handleFire(context, intent)
-        }
-    }
-
-    private fun handleFire(context: Context, intent: Intent) {
         val entryId = intent.getLongExtra(EXTRA_ENTRY_ID, -1L)
         val type = intent.getStringExtra(EXTRA_TYPE) ?: TYPE_REMINDER
         if (entryId == -1L) return
@@ -56,36 +49,6 @@ class NoteReminderReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun handleSnooze(context: Context, intent: Intent) {
-        val entryId = intent.getLongExtra(EXTRA_ENTRY_ID, -1L)
-        val type = intent.getStringExtra(EXTRA_TYPE) ?: TYPE_REMINDER
-        if (entryId == -1L) return
-
-        val notifId = notificationId(entryId, type)
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.cancel(notifId)
-
-        val pendingResult = goAsync()
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val newTrigger = System.currentTimeMillis() + SNOOZE_MINUTES * 60_000L
-                val dao = AppDatabase.getInstance(context).logEntryDao()
-                val entry = dao.getById(entryId)
-                if (entry != null) {
-                    if (type == TYPE_REMINDER) {
-                        dao.update(entry.copy(reminderAtMillis = newTrigger))
-                        NoteReminderScheduler.scheduleReminder(context, entryId, newTrigger)
-                    } else {
-                        dao.update(entry.copy(dueAtMillis = newTrigger))
-                        NoteReminderScheduler.scheduleDue(context, entryId, newTrigger)
-                    }
-                }
-            } finally {
-                pendingResult.finish()
-            }
-        }
-    }
-
     /** Repeat rule is always "CUSTOM:<intervalMillis>" or "NONE" in the current model. */
     private fun computeNextTrigger(previousMillis: Long, repeatRule: String): Long? {
         if (repeatRule.startsWith("CUSTOM:")) {
@@ -110,23 +73,12 @@ class NoteReminderReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val snoozeIntent = Intent(context, NoteReminderReceiver::class.java).apply {
-            action = ACTION_SNOOZE
-            putExtra(EXTRA_ENTRY_ID, entryId)
-            putExtra(EXTRA_TYPE, type)
-        }
-        val snoozePendingIntent = PendingIntent.getBroadcast(
-            context, notificationId(entryId, type) + 1_000_000, snoozeIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
             .setContentText(text)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(contentPendingIntent)
-            .addAction(0, "Snooze $SNOOZE_MINUTES min", snoozePendingIntent)
             .setAutoCancel(true)
             .build()
 
@@ -149,8 +101,6 @@ class NoteReminderReceiver : BroadcastReceiver() {
         const val TYPE_REMINDER = "REMINDER"
         const val TYPE_DUE = "DUE"
         const val ACTION_FIRE = "com.example.phonediary.ACTION_FIRE_NOTE_REMINDER"
-        const val ACTION_SNOOZE = "com.example.phonediary.ACTION_SNOOZE_NOTE_REMINDER"
-        const val SNOOZE_MINUTES = 10
         const val NOTIF_REMINDER_OFFSET = 500000
         const val NOTIF_DUE_OFFSET = 700000
     }
