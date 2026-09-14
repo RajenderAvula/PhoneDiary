@@ -6,18 +6,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.files.NotePrintHelper
 
-/**
- * A full-screen note editor, opened as an overlay. Shown when the user
- * taps "Expand" on the note field. Includes tag entry and a Print action.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullScreenNoteEditor(
     initialText: String,
     initialTags: List<String>,
+    highlightQuery: String? = null,
     onSave: (text: String, tags: List<String>) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -62,13 +60,27 @@ fun FullScreenNoteEditor(
                 .padding(16.dp)
                 .fillMaxSize()
         ) {
+            if (!highlightQuery.isNullOrBlank()) {
+                Text(
+                    "Showing match for \"$highlightQuery\"",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(4.dp))
+            }
+
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                placeholder = { Text("Write your note…") }
+                placeholder = { Text("Write your note…") },
+                visualTransformation = if (!highlightQuery.isNullOrBlank()) {
+                    HighlightTransformation(highlightQuery)
+                } else {
+                    VisualTransformation.None
+                }
             )
 
             Spacer(Modifier.height(12.dp))
