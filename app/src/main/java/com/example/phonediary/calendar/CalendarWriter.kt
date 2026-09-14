@@ -125,17 +125,22 @@ object CalendarWriter {
 
     private fun describeRepeat(repeatRule: String?): String {
         if (repeatRule.isNullOrBlank() || repeatRule == "NONE") return ""
-        if (repeatRule.startsWith("CUSTOM:")) {
-            val millis = repeatRule.removePrefix("CUSTOM:").toLongOrNull() ?: return ""
-            val hours = millis / (60 * 60 * 1000)
-            val days = hours / 24
-            return when {
-                days > 0 -> " (repeats every ${days}d)"
-                hours > 0 -> " (repeats every ${hours}h)"
-                else -> " (repeats)"
+        val parts = repeatRule.split("|")
+        if (parts.size != 4) return ""
+        val type = parts[0]
+        return if (type == "CUSTOM") {
+            val minutes = parts[1].toIntOrNull() ?: return ""
+            val h = minutes / 60
+            val m = minutes % 60
+            val intervalStr = when {
+                h > 0 && m > 0 -> "${h}h ${m}m"
+                h > 0 -> "${h}h"
+                else -> "${m}m"
             }
+            " (repeats every $intervalStr)"
+        } else {
+            " (repeats ${type.lowercase()})"
         }
-        return " (repeats ${repeatRule.lowercase()})"
     }
 
     private fun formatEntryDescription(entry: LogEntry): String {
