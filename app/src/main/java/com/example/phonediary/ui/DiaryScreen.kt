@@ -53,20 +53,7 @@ import java.util.Locale
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
-private fun repeatDisplayLabel(rule: String): String {
-    if (rule == "NONE" || rule.isBlank()) return "None"
-    if (rule.startsWith("CUSTOM:")) {
-        val millis = rule.removePrefix("CUSTOM:").toLongOrNull() ?: return "Custom"
-        val hours = millis / (60 * 60 * 1000)
-        val days = hours / 24
-        return when {
-            days > 0 -> "Every ${days}d"
-            hours > 0 -> "Every ${hours}h"
-            else -> "Custom"
-        }
-    }
-    return rule.lowercase().replaceFirstChar { it.uppercase() }
-}
+private fun repeatDisplayLabel(rule: String): String = repeatDisplayLabelPublic(rule)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -214,6 +201,18 @@ private fun HomeTabContent() {
         mainTagInput = ""
     }
 
+    fun resetMainEntryFields() {
+        noteText = ""
+        locationText = ""
+        pendingAttachments = emptyList()
+        reminderAtMillis = null
+        dueAtMillis = null
+        repeatRule = "NONE"
+        selectedCalendarDateTimeMillis = null
+        noteTags = emptyList()
+        mainTagInput = ""
+    }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -327,7 +326,6 @@ private fun HomeTabContent() {
                     set(year, month - 1, day, hour, minute, 0)
                 }
                 selectedCalendarDateTimeMillis = combined.timeInMillis
-                reminderAtMillis = combined.timeInMillis
             },
             now.get(Calendar.HOUR_OF_DAY),
             now.get(Calendar.MINUTE),
@@ -554,7 +552,6 @@ private fun HomeTabContent() {
             }) { Text("⛶") }
         }
 
-        // Tags — available directly here, not just in full screen.
         Spacer(Modifier.height(8.dp))
         Text("Tags", style = MaterialTheme.typography.bodySmall)
         if (noteTags.isNotEmpty()) {
@@ -579,7 +576,6 @@ private fun HomeTabContent() {
             Spacer(Modifier.width(8.dp))
             Button(onClick = { addMainTag(mainTagInput) }) { Text("Add") }
         }
-        // Suggestions from existing tags, filtered by what's being typed.
         val matchingTagSuggestions = remember(mainTagInput, allKnownTags, noteTags) {
             if (mainTagInput.isBlank()) emptyList()
             else allKnownTags.filter {
@@ -608,7 +604,6 @@ private fun HomeTabContent() {
             singleLine = true
         )
 
-        // Schedule — split into two rows so nothing is cramped.
         Spacer(Modifier.height(8.dp))
         Text("Schedule (optional)", style = MaterialTheme.typography.bodySmall)
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -618,12 +613,22 @@ private fun HomeTabContent() {
             ) {
                 Text(reminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
             }
-            Spacer(Modifier.width(8.dp))
+            if (reminderAtMillis != null) {
+                Spacer(Modifier.width(6.dp))
+                OutlinedButton(onClick = { reminderAtMillis = null }) { Text("✕") }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(
                 modifier = Modifier.weight(1f),
                 onClick = { DateTimePickerUtil.pick(context) { picked -> dueAtMillis = picked } }
             ) {
                 Text(dueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
+            }
+            if (dueAtMillis != null) {
+                Spacer(Modifier.width(6.dp))
+                OutlinedButton(onClick = { dueAtMillis = null }) { Text("✕") }
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -641,7 +646,7 @@ private fun HomeTabContent() {
                 Text(if (repeatRule != "NONE") "🔁 ${repeatDisplayLabel(repeatRule)}" else "🔁 Repeat")
             }
             if (repeatRule != "NONE") {
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(6.dp))
                 OutlinedButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
             }
         }
@@ -671,51 +676,47 @@ private fun HomeTabContent() {
         }
 
         Spacer(Modifier.height(8.dp))
-        Button(onClick = {
-            if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachments.isNotEmpty()) {
-                scope.launch {
-                    val nowMillis = System.currentTimeMillis()
-                    val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(nowMillis)
-                    val targetDateKey = selectedDate ?: todayKey
-                    val entryTimestamp = selectedCalendarDateTimeMillis ?: nowMillis
+        Row {
+            Button(onClick = {
+                if (noteText.isNotBlank() || locationText.isNotBlank() || pendingAttachments.isNotEmpty()) {
+                    scope.launch {
+                        val nowMillis = System.currentTimeMillis()
+                        val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(nowMillis)
+                        val targetDateKey = selectedDate ?: todayKey
+                        val entryTimestamp = selectedCalendarDateTimeMillis ?: nowMillis
 
-                    val newId = AppDatabase.getInstance(context).logEntryDao().insert(
-                        LogEntry(
-                            timestampMillis = entryTimestamp,
-                            dateKey = targetDateKey,
-                            source = "manual_note",
-                            note = noteText.ifBlank { null },
-                            locationUrl = locationText.ifBlank { null },
-                            attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name }),
-                            reminderAtMillis = reminderAtMillis,
-                            dueAtMillis = dueAtMillis,
-                            repeatRule = if (reminderAtMillis != null) repeatRule else null,
-                            lastModifiedMillis = entryTimestamp,
-                            tags = TagListUtil.toStored(noteTags)
+                        val newId = AppDatabase.getInstance(context).logEntryDao().insert(
+                            LogEntry(
+                                timestampMillis = entryTimestamp,
+                                dateKey = targetDateKey,
+                                source = "manual_note",
+                                note = noteText.ifBlank { null },
+                                locationUrl = locationText.ifBlank { null },
+                                attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name }),
+                                reminderAtMillis = reminderAtMillis,
+                                dueAtMillis = dueAtMillis,
+                                repeatRule = if (reminderAtMillis != null || dueAtMillis != null) repeatRule else null,
+                                lastModifiedMillis = entryTimestamp,
+                                tags = TagListUtil.toStored(noteTags)
+                            )
                         )
-                    )
-                    reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
-                    dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, newId, it) }
+                        reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
+                        dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, newId, it) }
 
-                    AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
-                        CalendarWriter.refreshEntry(context, it)
+                        AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
+                            CalendarWriter.refreshEntry(context, it)
+                        }
+
+                        resetMainEntryFields()
+                        refreshDates()
+                        loadAllTags()
+                        openDate(targetDateKey)
                     }
-
-                    noteText = ""
-                    locationText = ""
-                    pendingAttachments = emptyList()
-                    reminderAtMillis = null
-                    dueAtMillis = null
-                    repeatRule = "NONE"
-                    selectedCalendarDateTimeMillis = null
-                    noteTags = emptyList()
-                    mainTagInput = ""
-                    refreshDates()
-                    loadAllTags()
-                    openDate(targetDateKey)
                 }
-            }
-        }) { Text("Save entry") }
+            }) { Text("Save entry") }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(onClick = { resetMainEntryFields() }) { Text("Cancel") }
+        }
 
         // ---- 4. Day details ----
         selectedDate?.let { date ->
@@ -776,12 +777,22 @@ private fun HomeTabContent() {
                                 ) {
                                     Text(editingReminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
                                 }
-                                Spacer(Modifier.width(8.dp))
+                                if (editingReminderAtMillis != null) {
+                                    Spacer(Modifier.width(6.dp))
+                                    OutlinedButton(onClick = { editingReminderAtMillis = null }) { Text("✕") }
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 OutlinedButton(
                                     modifier = Modifier.weight(1f),
                                     onClick = { DateTimePickerUtil.pick(context) { picked -> editingDueAtMillis = picked } }
                                 ) {
                                     Text(editingDueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
+                                }
+                                if (editingDueAtMillis != null) {
+                                    Spacer(Modifier.width(6.dp))
+                                    OutlinedButton(onClick = { editingDueAtMillis = null }) { Text("✕") }
                                 }
                             }
                             Spacer(Modifier.height(6.dp))
@@ -799,7 +810,7 @@ private fun HomeTabContent() {
                                     Text(if (editingRepeatRule != "NONE") "🔁 ${repeatDisplayLabel(editingRepeatRule)}" else "🔁 Repeat")
                                 }
                                 if (editingRepeatRule != "NONE") {
-                                    Spacer(Modifier.width(8.dp))
+                                    Spacer(Modifier.width(6.dp))
                                     OutlinedButton(onClick = { editingRepeatRule = "NONE" }) { Text("✕") }
                                 }
                             }
@@ -827,7 +838,7 @@ private fun HomeTabContent() {
                                             attachmentFileName = AttachmentListUtil.toStored(editingAttachments),
                                             reminderAtMillis = editingReminderAtMillis,
                                             dueAtMillis = editingDueAtMillis,
-                                            repeatRule = if (editingReminderAtMillis != null) editingRepeatRule else null,
+                                            repeatRule = if (editingReminderAtMillis != null || editingDueAtMillis != null) editingRepeatRule else null,
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
@@ -927,47 +938,79 @@ private fun HomeTabContent() {
     if (showFullScreenEditor) {
         val editingId = fullScreenEditingEntryId
         var loadedEntry by remember(editingId) { mutableStateOf<LogEntry?>(null) }
+        var isLoaded by remember(editingId) { mutableStateOf(editingId == null) }
 
         LaunchedEffect(editingId) {
-            loadedEntry = if (editingId != null) {
-                AppDatabase.getInstance(context).logEntryDao().getById(editingId)
-            } else null
+            if (editingId != null) {
+                loadedEntry = AppDatabase.getInstance(context).logEntryDao().getById(editingId)
+                isLoaded = true
+            }
         }
 
-        val initialText = if (editingId == null) noteText else (loadedEntry?.note ?: "")
-        val initialTags = if (editingId == null) noteTags else TagListUtil.toList(loadedEntry?.tags)
+        // Wait for the real data before showing the editor, so it never
+        // opens blank while the existing note is still loading.
+        if (isLoaded) {
+            val initialText = if (editingId == null) noteText else (loadedEntry?.note ?: "")
+            val initialLocation = if (editingId == null) locationText else (loadedEntry?.locationUrl ?: "")
+            val initialTags = if (editingId == null) noteTags else TagListUtil.toList(loadedEntry?.tags)
+            val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName)
+            val initialReminder = if (editingId == null) reminderAtMillis else loadedEntry?.reminderAtMillis
+            val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
+            val initialRepeat = if (editingId == null) repeatRule else (loadedEntry?.repeatRule ?: "NONE")
 
-        FullScreenNoteEditor(
-            initialText = initialText,
-            initialTags = initialTags,
-            highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
-            onSave = { text, tags ->
-                if (editingId == null) {
-                    noteText = text
-                    noteTags = tags
-                } else {
-                    scope.launch {
-                        loadedEntry?.let { entry ->
-                            val updated = entry.copy(
-                                note = text.ifBlank { null },
-                                tags = TagListUtil.toStored(tags),
-                                lastModifiedMillis = System.currentTimeMillis()
-                            )
-                            AppDatabase.getInstance(context).logEntryDao().update(updated)
-                            CalendarWriter.refreshEntry(context, updated)
-                            loadAllTags()
-                            selectedDate?.let { openDate(it) }
+            FullScreenNoteEditor(
+                initialText = initialText,
+                initialLocationUrl = initialLocation,
+                initialTags = initialTags,
+                initialAttachmentNames = initialAttachments,
+                initialReminderAtMillis = initialReminder,
+                initialDueAtMillis = initialDue,
+                initialRepeatRule = initialRepeat,
+                highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
+                onSave = { result ->
+                    if (editingId == null) {
+                        // Feed back into the main composer fields.
+                        noteText = result.text
+                        locationText = result.locationUrl
+                        noteTags = result.tags
+                        pendingAttachments = pendingAttachments + result.newAttachments
+                        reminderAtMillis = result.reminderAtMillis
+                        dueAtMillis = result.dueAtMillis
+                        repeatRule = result.repeatRule
+                    } else {
+                        scope.launch {
+                            loadedEntry?.let { entry ->
+                                val finalAttachments = result.existingAttachmentNames + result.newAttachments.map { it.name }
+                                val updated = entry.copy(
+                                    note = result.text.ifBlank { null },
+                                    locationUrl = result.locationUrl.ifBlank { null },
+                                    tags = TagListUtil.toStored(result.tags),
+                                    attachmentFileName = AttachmentListUtil.toStored(finalAttachments),
+                                    reminderAtMillis = result.reminderAtMillis,
+                                    dueAtMillis = result.dueAtMillis,
+                                    repeatRule = result.repeatRule,
+                                    lastModifiedMillis = System.currentTimeMillis()
+                                )
+                                AppDatabase.getInstance(context).logEntryDao().update(updated)
+                                NoteReminderScheduler.cancelReminder(context, entry.id)
+                                NoteReminderScheduler.cancelDue(context, entry.id)
+                                result.reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, entry.id, it) }
+                                result.dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, entry.id, it) }
+                                CalendarWriter.refreshEntry(context, updated)
+                                loadAllTags()
+                                selectedDate?.let { openDate(it) }
+                            }
                         }
                     }
+                    showFullScreenEditor = false
+                    fullScreenHighlightQuery = null
+                },
+                onCancel = {
+                    showFullScreenEditor = false
+                    fullScreenHighlightQuery = null
                 }
-                showFullScreenEditor = false
-                fullScreenHighlightQuery = null
-            },
-            onDismiss = {
-                showFullScreenEditor = false
-                fullScreenHighlightQuery = null
-            }
-        )
+            )
+        }
     }
 }
 
