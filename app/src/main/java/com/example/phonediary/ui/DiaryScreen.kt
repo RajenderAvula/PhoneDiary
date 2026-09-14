@@ -1,11 +1,13 @@
 package com.example.phonediary.ui
 
 import android.app.Activity
+import android.app.AlarmManager
 import android.app.TimePickerDialog
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.CalendarContract
 import android.provider.MediaStore
 import android.provider.Settings
@@ -178,7 +180,9 @@ private fun HomeTabContent() {
 
     var showFullScreenEditor by remember { mutableStateOf(false) }
     var fullScreenEditingEntryId by remember { mutableStateOf<Long?>(null) }
+    var fullScreenHighlightQuery by remember { mutableStateOf<String?>(null) }
     var noteTags by remember { mutableStateOf(listOf<String>()) }
+    var mainTagInput by remember { mutableStateOf("") }
 
     var tagFilter by remember { mutableStateOf<String?>(null) }
     var tagFilterResults by remember { mutableStateOf<List<LogEntry>>(emptyList()) }
@@ -200,6 +204,14 @@ private fun HomeTabContent() {
         scope.launch {
             tagFilterResults = AppDatabase.getInstance(context).logEntryDao().getEntriesByTag(tag)
         }
+    }
+
+    fun addMainTag(rawTag: String) {
+        val cleaned = rawTag.trim().removePrefix("#")
+        if (cleaned.isNotBlank() && cleaned !in noteTags) {
+            noteTags = noteTags + cleaned
+        }
+        mainTagInput = ""
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -381,6 +393,12 @@ private fun HomeTabContent() {
         }
     }
 
+    fun openNoteInFullScreen(entryId: Long, highlight: String? = null) {
+        fullScreenEditingEntryId = entryId
+        fullScreenHighlightQuery = highlight
+        showFullScreenEditor = true
+    }
+
     LaunchedEffect(Unit) { refreshDates(); loadAllTags() }
 
     Column(
@@ -411,7 +429,9 @@ private fun HomeTabContent() {
                 val entryDateTime = remember(entry.timestampMillis) { dateTimeFormat.format(entry.timestampMillis) }
                 val label = entry.note ?: entry.appName ?: entry.source
                 Row(
-                    modifier = Modifier.fillMaxWidth().clickable { openDate(entry.dateKey) }.padding(vertical = 6.dp)
+                    modifier = Modifier.fillMaxWidth()
+                        .clickable { openNoteInFullScreen(entry.id, searchQuery) }
+                        .padding(vertical = 6.dp)
                 ) {
                     Column {
                         Text(entryDateTime, style = MaterialTheme.typography.bodySmall)
@@ -442,7 +462,7 @@ private fun HomeTabContent() {
                     val relevantTime = if (filterMode == FilterMode.REMINDERS) entry.reminderAtMillis else entry.dueAtMillis
                     val label = entry.note ?: entry.appName ?: entry.source
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable { openDate(entry.dateKey) }.padding(vertical = 6.dp)
+                        modifier = Modifier.fillMaxWidth().clickable { openNoteInFullScreen(entry.id) }.padding(vertical = 6.dp)
                     ) {
                         Column {
                             Text(relevantTime?.let { dateTimeFormat.format(it) } ?: "", style = MaterialTheme.typography.bodySmall)
@@ -479,7 +499,7 @@ private fun HomeTabContent() {
                 tagFilterResults.forEach { entry ->
                     val label = entry.note ?: entry.appName ?: entry.source
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable { openDate(entry.dateKey) }.padding(vertical = 6.dp)
+                        modifier = Modifier.fillMaxWidth().clickable { openNoteInFullScreen(entry.id) }.padding(vertical = 6.dp)
                     ) {
                         Text(label, style = MaterialTheme.typography.bodyMedium)
                     }
@@ -529,15 +549,52 @@ private fun HomeTabContent() {
             IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
             IconButton(onClick = {
                 fullScreenEditingEntryId = null
+                fullScreenHighlightQuery = null
                 showFullScreenEditor = true
             }) { Text("⛶") }
         }
 
+        // Tags — available directly here, not just in full screen.
+        Spacer(Modifier.height(8.dp))
+        Text("Tags", style = MaterialTheme.typography.bodySmall)
         if (noteTags.isNotEmpty()) {
-            Spacer(Modifier.height(4.dp))
-            Row {
+            Row(modifier = Modifier.fillMaxWidth()) {
                 noteTags.forEach { tag ->
-                    AssistChip(onClick = {}, label = { Text("#$tag") }, modifier = Modifier.padding(end = 4.dp))
+                    AssistChip(
+                        onClick = { noteTags = noteTags.filterNot { it == tag } },
+                        label = { Text("#$tag ✕") },
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = mainTagInput,
+                onValueChange = { mainTagInput = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Add tag…") },
+                singleLine = true
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = { addMainTag(mainTagInput) }) { Text("Add") }
+        }
+        // Suggestions from existing tags, filtered by what's being typed.
+        val matchingTagSuggestions = remember(mainTagInput, allKnownTags, noteTags) {
+            if (mainTagInput.isBlank()) emptyList()
+            else allKnownTags.filter {
+                it.contains(mainTagInput, ignoreCase = true) && it !in noteTags
+            }
+        }
+        if (matchingTagSuggestions.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                matchingTagSuggestions.take(5).forEach { suggestion ->
+                    AssistChip(
+                        onClick = { addMainTag(suggestion) },
+                        label = { Text("#$suggestion") },
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
                 }
             }
         }
@@ -551,33 +608,41 @@ private fun HomeTabContent() {
             singleLine = true
         )
 
+        // Schedule — split into two rows so nothing is cramped.
         Spacer(Modifier.height(8.dp))
         Text("Schedule (optional)", style = MaterialTheme.typography.bodySmall)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = {
-                DateTimePickerUtil.pick(context) { picked -> reminderAtMillis = picked }
-            }) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(
+                modifier = Modifier.weight(1f),
+                onClick = { DateTimePickerUtil.pick(context) { picked -> reminderAtMillis = picked } }
+            ) {
                 Text(reminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
             }
-            Spacer(Modifier.width(6.dp))
-            OutlinedButton(onClick = {
-                DateTimePickerUtil.pick(context) { picked -> dueAtMillis = picked }
-            }) {
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(
+                modifier = Modifier.weight(1f),
+                onClick = { DateTimePickerUtil.pick(context) { picked -> dueAtMillis = picked } }
+            ) {
                 Text(dueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
             }
-            Spacer(Modifier.width(6.dp))
-            OutlinedButton(onClick = {
-                DateTimePickerUtil.pick(context) { picked ->
-                    val base = reminderAtMillis ?: dueAtMillis ?: System.currentTimeMillis()
-                    val interval = picked - base
-                    if (interval > 0) repeatRule = "CUSTOM:$interval"
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    DateTimePickerUtil.pick(context) { picked ->
+                        val base = reminderAtMillis ?: dueAtMillis ?: System.currentTimeMillis()
+                        val interval = picked - base
+                        if (interval > 0) repeatRule = "CUSTOM:$interval"
+                    }
                 }
-            }) {
+            ) {
                 Text(if (repeatRule != "NONE") "🔁 ${repeatDisplayLabel(repeatRule)}" else "🔁 Repeat")
             }
             if (repeatRule != "NONE") {
-                Spacer(Modifier.width(4.dp))
-                TextButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
             }
         }
 
@@ -644,6 +709,7 @@ private fun HomeTabContent() {
                     repeatRule = "NONE"
                     selectedCalendarDateTimeMillis = null
                     noteTags = emptyList()
+                    mainTagInput = ""
                     refreshDates()
                     loadAllTags()
                     openDate(targetDateKey)
@@ -702,32 +768,39 @@ private fun HomeTabContent() {
                                 placeholder = { Text("Location URL") },
                                 singleLine = true
                             )
-                            Spacer(Modifier.height(4.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedButton(onClick = {
-                                    DateTimePickerUtil.pick(context) { picked -> editingReminderAtMillis = picked }
-                                }) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedButton(
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { DateTimePickerUtil.pick(context) { picked -> editingReminderAtMillis = picked } }
+                                ) {
                                     Text(editingReminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
                                 }
-                                Spacer(Modifier.width(6.dp))
-                                OutlinedButton(onClick = {
-                                    DateTimePickerUtil.pick(context) { picked -> editingDueAtMillis = picked }
-                                }) {
+                                Spacer(Modifier.width(8.dp))
+                                OutlinedButton(
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { DateTimePickerUtil.pick(context) { picked -> editingDueAtMillis = picked } }
+                                ) {
                                     Text(editingDueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
                                 }
-                                Spacer(Modifier.width(6.dp))
-                                OutlinedButton(onClick = {
-                                    DateTimePickerUtil.pick(context) { picked ->
-                                        val base = editingReminderAtMillis ?: editingDueAtMillis ?: System.currentTimeMillis()
-                                        val interval = picked - base
-                                        if (interval > 0) editingRepeatRule = "CUSTOM:$interval"
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedButton(
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        DateTimePickerUtil.pick(context) { picked ->
+                                            val base = editingReminderAtMillis ?: editingDueAtMillis ?: System.currentTimeMillis()
+                                            val interval = picked - base
+                                            if (interval > 0) editingRepeatRule = "CUSTOM:$interval"
+                                        }
                                     }
-                                }) {
+                                ) {
                                     Text(if (editingRepeatRule != "NONE") "🔁 ${repeatDisplayLabel(editingRepeatRule)}" else "🔁 Repeat")
                                 }
                                 if (editingRepeatRule != "NONE") {
-                                    Spacer(Modifier.width(4.dp))
-                                    TextButton(onClick = { editingRepeatRule = "NONE" }) { Text("✕") }
+                                    Spacer(Modifier.width(8.dp))
+                                    OutlinedButton(onClick = { editingRepeatRule = "NONE" }) { Text("✕") }
                                 }
                             }
                             Spacer(Modifier.height(4.dp))
@@ -791,10 +864,7 @@ private fun HomeTabContent() {
                                 ) {
                                     Text("$time  •  $displayLabel", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                                     if (!selectionMode) {
-                                        TextButton(onClick = {
-                                            fullScreenEditingEntryId = entry.id
-                                            showFullScreenEditor = true
-                                        }) { Text("⛶") }
+                                        TextButton(onClick = { openNoteInFullScreen(entry.id) }) { Text("⛶") }
                                         TextButton(onClick = {
                                             editingEntryId = entry.id
                                             editingNoteText = entry.note ?: ""
@@ -870,6 +940,7 @@ private fun HomeTabContent() {
         FullScreenNoteEditor(
             initialText = initialText,
             initialTags = initialTags,
+            highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
             onSave = { text, tags ->
                 if (editingId == null) {
                     noteText = text
@@ -890,8 +961,12 @@ private fun HomeTabContent() {
                     }
                 }
                 showFullScreenEditor = false
+                fullScreenHighlightQuery = null
             },
-            onDismiss = { showFullScreenEditor = false }
+            onDismiss = {
+                showFullScreenEditor = false
+                fullScreenHighlightQuery = null
+            }
         )
     }
 }
@@ -982,6 +1057,13 @@ private fun SettingsPanel(
     val hasCalendarPermission = remember { CalendarWriter.hasCalendarPermission(context) }
     val scope = rememberCoroutineScope()
 
+    val canScheduleExactAlarms = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            am.canScheduleExactAlarms()
+        } else true
+    }
+
     var backupStatus by remember { mutableStateOf<String?>(null) }
     var isBackingUp by remember { mutableStateOf(false) }
     var lastBackupUri by remember { mutableStateOf<Uri?>(null) }
@@ -1012,6 +1094,35 @@ private fun SettingsPanel(
         Text("Settings", style = MaterialTheme.typography.titleMedium)
 
         Spacer(Modifier.height(8.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Notifications", style = MaterialTheme.typography.titleSmall)
+        Text(
+            if (canScheduleExactAlarms) "Exact alarms: allowed ✓" else "Exact alarms: NOT allowed — reminders may not fire on time",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (!canScheduleExactAlarms && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Button(onClick = {
+                context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
+            }) {
+                Text("Allow exact alarms")
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Button(onClick = {
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            }
+            context.startActivity(intent)
+        }) {
+            Text("Check notification settings")
+        }
+        Text(
+            "If reminders still don't fire after allowing both, some phone brands (Xiaomi, Oppo, etc.) require 'Autostart' or battery-saver exemption too.",
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        Spacer(Modifier.height(12.dp))
         Divider()
         Spacer(Modifier.height(8.dp))
         Text("Theme", style = MaterialTheme.typography.titleSmall)
