@@ -1,5 +1,5 @@
 package com.example.phonediary.ui
-
+import androidx.compose.ui.text.withStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
