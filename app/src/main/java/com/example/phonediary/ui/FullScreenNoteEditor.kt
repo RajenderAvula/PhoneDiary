@@ -158,7 +158,7 @@ fun FullScreenNoteEditor(
                                 newAttachments = newAttachments,
                                 reminderAtMillis = reminderAtMillis,
                                 dueAtMillis = dueAtMillis,
-                                repeatRule = if (reminderAtMillis != null || dueAtMillis != null) repeatRule else "NONE"
+                                repeatRule = repeatRule
                             )
                         )
                     }) {
