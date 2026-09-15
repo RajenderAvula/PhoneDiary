@@ -39,10 +39,22 @@ fun RepeatPickerDialog(
         onDismissRequest = onDismiss,
         title = { Text("Repeat") },
         text = {
-            Column {
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Text("Repeat", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.height(4.dp))
+                // Wrapped across two rows so it never gets clipped off the dialog edge.
                 Row(modifier = Modifier.fillMaxWidth()) {
-                    listOf("DAILY", "WEEKLY", "MONTHLY", "YEARLY", "CUSTOM").forEach { option ->
+                    listOf("DAILY", "WEEKLY", "MONTHLY").forEach { option ->
+                        FilterChip(
+                            selected = type == option,
+                            onClick = { type = option },
+                            label = { Text(option.lowercase().replaceFirstChar { it.uppercase() }) },
+                            modifier = Modifier.padding(end = 4.dp, bottom = 4.dp)
+                        )
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    listOf("YEARLY", "CUSTOM").forEach { option ->
                         FilterChip(
                             selected = type == option,
                             onClick = { type = option },
@@ -59,7 +71,7 @@ fun RepeatPickerDialog(
                         OutlinedTextField(
                             value = hoursInput,
                             onValueChange = { hoursInput = it.filter { c -> c.isDigit() }.take(2) },
-                            modifier = Modifier.width(70.dp),
+                            modifier = Modifier.width(80.dp),
                             singleLine = true,
                             label = { Text("hrs") }
                         )
@@ -67,7 +79,7 @@ fun RepeatPickerDialog(
                         OutlinedTextField(
                             value = minutesInput,
                             onValueChange = { minutesInput = it.filter { c -> c.isDigit() }.take(2) },
-                            modifier = Modifier.width(70.dp),
+                            modifier = Modifier.width(80.dp),
                             singleLine = true,
                             label = { Text("min") }
                         )
@@ -76,12 +88,14 @@ fun RepeatPickerDialog(
 
                 Spacer(Modifier.height(12.dp))
                 Text("Start time", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.height(4.dp))
                 OutlinedButton(onClick = { pickTime(startMinute) { startMinute = it } }) {
                     Text(RepeatConfig.formatTimeOfDay(startMinute))
                 }
 
                 Spacer(Modifier.height(8.dp))
                 Text("End time", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.height(4.dp))
                 OutlinedButton(onClick = { pickTime(endMinute) { endMinute = it } }) {
                     Text(RepeatConfig.formatTimeOfDay(endMinute))
                 }
