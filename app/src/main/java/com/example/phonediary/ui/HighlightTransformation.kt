@@ -1,20 +1,15 @@
 package com.example.phonediary.ui
-import androidx.compose.ui.text.withStyle
+
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 
-/**
- * Highlights every occurrence of [query] using the theme's own
- * primaryContainer/onPrimaryContainer colors, so it stays legible in
- * both dark and colourful themes instead of a fixed yellow that
- * disappears against dark backgrounds.
- */
 class HighlightTransformation(
     private val query: String,
     private val backgroundColor: Color,
@@ -40,7 +35,6 @@ class HighlightTransformation(
     }
 }
 
-/** Convenience: builds a HighlightTransformation using current theme colors. */
 @Composable
 fun rememberThemedHighlight(query: String): HighlightTransformation {
     val bg = MaterialTheme.colorScheme.primary
@@ -48,7 +42,6 @@ fun rememberThemedHighlight(query: String): HighlightTransformation {
     return HighlightTransformation(query, bg, fg)
 }
 
-/** Wraps [label] in a simple inline highlighted AnnotatedString for plain Text() display (search result lists). */
 fun buildHighlightedString(
     text: String,
     query: String,
