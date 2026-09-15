@@ -33,7 +33,8 @@ interface LogEntryDao {
 
     @Query("""
         SELECT * FROM log_entries 
-        WHERE note LIKE '%' || :keyword || '%' 
+        WHERE title LIKE '%' || :keyword || '%'
+           OR note LIKE '%' || :keyword || '%' 
            OR appName LIKE '%' || :keyword || '%'
            OR locationUrl LIKE '%' || :keyword || '%'
            OR attachmentFileName LIKE '%' || :keyword || '%'
