@@ -729,7 +729,7 @@ private fun HomeTabContent() {
                                 attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name }),
                                 reminderAtMillis = reminderAtMillis,
                                 dueAtMillis = dueAtMillis,
-                                repeatRule = if (reminderAtMillis != null || dueAtMillis != null) repeatConfig.toStored() else null,
+                                repeatRule = if (repeatConfig.type != "NONE") repeatConfig.toStored() else null,
                                 lastModifiedMillis = entryTimestamp,
                                 tags = TagListUtil.toStored(noteTags)
                             )
@@ -883,7 +883,7 @@ private fun HomeTabContent() {
                                             attachmentFileName = AttachmentListUtil.toStored(editingAttachments),
                                             reminderAtMillis = editingReminderAtMillis,
                                             dueAtMillis = editingDueAtMillis,
-                                            repeatRule = if (editingReminderAtMillis != null || editingDueAtMillis != null) editingRepeatConfig.toStored() else null,
+                                            repeatRule = if (editingRepeatConfig.type != "NONE") editingRepeatConfig.toStored() else null,
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
