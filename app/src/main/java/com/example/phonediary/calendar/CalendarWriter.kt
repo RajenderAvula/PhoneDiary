@@ -145,7 +145,7 @@ object CalendarWriter {
 
     private fun formatEntryDescription(entry: LogEntry): String {
         val dateTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
-        val baseLine = when (entry.source) {
+        val bodyLine = when (entry.source) {
             "app_usage" -> {
                 val minutes = (entry.durationMillis ?: 0L) / 60000
                 "Used ${entry.appName} for ${minutes}m"
@@ -153,6 +153,12 @@ object CalendarWriter {
             "screen_content" -> "${entry.appName}${entry.note?.let { ": $it" } ?: ""}"
             "manual_note" -> entry.note ?: ""
             else -> entry.note ?: entry.appName ?: entry.source
+        }
+        // Lead with the note's title (if set) as its own line, then the body.
+        val baseLine = if (!entry.title.isNullOrBlank()) {
+            "${entry.title}\n$bodyLine"
+        } else {
+            bodyLine
         }
 
         val extras = buildList {
@@ -169,11 +175,6 @@ object CalendarWriter {
         return if (extras.isEmpty()) baseLine else "$baseLine\n" + extras.joinToString("\n") { "  $it" }
     }
 
-    /**
-     * Writes (or updates) a single TIMED calendar event for this entry,
-     * anchored to timestampMillis — the note's original CREATION time.
-     * Editing the note's text/tags/schedule never moves this event's time.
-     */
     fun writeEntryEvent(context: Context, entry: LogEntry): Boolean {
         if (!hasCalendarPermission(context)) return false
         val calendarId = findWritableCalendarId(context) ?: return false
@@ -181,7 +182,10 @@ object CalendarWriter {
         val startMillis = entry.timestampMillis
         val endMillis = startMillis + DEFAULT_DURATION_MILLIS
 
-        val displayTitle = entry.note?.takeIf { it.isNotBlank() }
+        // Prefer the note's own title for the visible event label; fall
+        // back to note text, then app name, then source.
+        val displayTitle = entry.title?.takeIf { it.isNotBlank() }
+            ?: entry.note?.takeIf { it.isNotBlank() }
             ?: entry.appName
             ?: entry.source
 
