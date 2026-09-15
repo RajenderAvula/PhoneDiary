@@ -26,6 +26,7 @@ import java.util.Locale
 
 /** What the caller gets back when Save is tapped. */
 data class FullScreenNoteResult(
+    val title: String,
     val text: String,
     val locationUrl: String,
     val tags: List<String>,
@@ -39,6 +40,7 @@ data class FullScreenNoteResult(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullScreenNoteEditor(
+    initialTitle: String,
     initialText: String,
     initialLocationUrl: String,
     initialTags: List<String>,
@@ -55,6 +57,7 @@ fun FullScreenNoteEditor(
     val dateTimeFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
     val audioRecorder = remember { AudioRecorderHelper(context) }
 
+    var title by remember { mutableStateOf(initialTitle) }
     var text by remember { mutableStateOf(initialText) }
     var locationUrl by remember { mutableStateOf(initialLocationUrl) }
     var tagInput by remember { mutableStateOf("") }
@@ -68,6 +71,7 @@ fun FullScreenNoteEditor(
     var reminderAtMillis by remember { mutableStateOf(initialReminderAtMillis) }
     var dueAtMillis by remember { mutableStateOf(initialDueAtMillis) }
     var repeatRule by remember { mutableStateOf(initialRepeatRule) }
+    var showRepeatDialogFS by remember { mutableStateOf(false) }
 
     fun addTagFromInput() {
         val cleaned = tagInput.trim().removePrefix("#")
@@ -139,13 +143,14 @@ fun FullScreenNoteEditor(
                 },
                 actions = {
                     TextButton(onClick = {
-                        NotePrintHelper.printNote(context, "Phone Diary Note", text, tags)
+                        NotePrintHelper.printNote(context, title.ifBlank { "Phone Diary Note" }, text, tags)
                     }) {
                         Text("🖨 Print")
                     }
                     TextButton(onClick = {
                         onSave(
                             FullScreenNoteResult(
+                                title = title,
                                 text = text,
                                 locationUrl = locationUrl,
                                 tags = tags,
@@ -169,6 +174,15 @@ fun FullScreenNoteEditor(
                 .padding(16.dp)
                 .fillMaxSize()
         ) {
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Note title (optional) — shown in Calendar & searchable") },
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+
             if (!highlightQuery.isNullOrBlank()) {
                 Text(
                     "Showing match for \"$highlightQuery\"",
@@ -254,7 +268,6 @@ fun FullScreenNoteEditor(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            var showRepeatDialogFS by remember { mutableStateOf(false) }
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
@@ -309,20 +322,3 @@ fun FullScreenNoteEditor(
         }
     }
 }
-
-/** Exposed so this file doesn't depend on DiaryScreen.kt's private label function. */
-/* fun repeatDisplayLabelPublic(rule: String): String {
-    if (rule == "NONE" || rule.isBlank()) return "None"
-    if (rule.startsWith("CUSTOM:")) {
-        val millis = rule.removePrefix("CUSTOM:").toLongOrNull() ?: return "Custom"
-        val hours = millis / (60 * 60 * 1000)
-        val days = hours / 24
-        return when {
-            days > 0 -> "Every ${days}d"
-            hours > 0 -> "Every ${hours}h"
-            else -> "Custom"
-        }
-    }
-    return rule.lowercase().replaceFirstChar { it.uppercase() }
-}
-*/
