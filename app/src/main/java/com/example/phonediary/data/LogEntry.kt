@@ -11,6 +11,9 @@ data class LogEntry(
     val source: String,
     val appName: String? = null,
     val durationMillis: Long? = null,
+    // Optional short name for the note — shows as the Calendar event title
+    // and is searchable, distinct from the note body text.
+    val title: String? = null,
     val note: String? = null,
     val locationUrl: String? = null,
     val attachmentFileName: String? = null,
@@ -18,6 +21,5 @@ data class LogEntry(
     val dueAtMillis: Long? = null,
     val repeatRule: String? = null,
     val lastModifiedMillis: Long = System.currentTimeMillis(),
-    // "|"-joined tag names, same pattern as attachments — see AttachmentListUtil.
     val tags: String? = null
 )
