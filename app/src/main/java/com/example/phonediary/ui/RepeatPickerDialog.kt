@@ -19,8 +19,14 @@ fun RepeatPickerDialog(
 ) {
     val context = LocalContext.current
     var type by remember { mutableStateOf(initial.type.takeIf { it != "NONE" } ?: "DAILY") }
-    var hoursInput by remember { mutableStateOf((initial.intervalMinutes / 60).toString()) }
-    var minutesInput by remember { mutableStateOf((initial.intervalMinutes % 60).toString()) }
+
+    val initDays = initial.intervalMinutes / 1440
+    val initHours = (initial.intervalMinutes % 1440) / 60
+    val initMinutes = initial.intervalMinutes % 60
+    var daysInput by remember { mutableStateOf(initDays.toString()) }
+    var hoursInput by remember { mutableStateOf(initHours.toString()) }
+    var minutesInput by remember { mutableStateOf(initMinutes.toString()) }
+
     var startMinute by remember { mutableStateOf(initial.startMinuteOfDay) }
     var endMinute by remember { mutableStateOf(initial.endMinuteOfDay) }
 
@@ -42,7 +48,6 @@ fun RepeatPickerDialog(
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text("Repeat", style = MaterialTheme.typography.labelMedium)
                 Spacer(Modifier.height(4.dp))
-                // Wrapped across two rows so it never gets clipped off the dialog edge.
                 Row(modifier = Modifier.fillMaxWidth()) {
                     listOf("DAILY", "WEEKLY", "MONTHLY").forEach { option ->
                         FilterChip(
@@ -69,17 +74,25 @@ fun RepeatPickerDialog(
                     Text("Every", style = MaterialTheme.typography.labelMedium)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
+                            value = daysInput,
+                            onValueChange = { daysInput = it.filter { c -> c.isDigit() }.take(3) },
+                            modifier = Modifier.width(70.dp),
+                            singleLine = true,
+                            label = { Text("days") }
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        OutlinedTextField(
                             value = hoursInput,
                             onValueChange = { hoursInput = it.filter { c -> c.isDigit() }.take(2) },
-                            modifier = Modifier.width(80.dp),
+                            modifier = Modifier.width(70.dp),
                             singleLine = true,
                             label = { Text("hrs") }
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(6.dp))
                         OutlinedTextField(
                             value = minutesInput,
                             onValueChange = { minutesInput = it.filter { c -> c.isDigit() }.take(2) },
-                            modifier = Modifier.width(80.dp),
+                            modifier = Modifier.width(70.dp),
                             singleLine = true,
                             label = { Text("min") }
                         )
@@ -103,12 +116,13 @@ fun RepeatPickerDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val intervalMinutes = if (type == "CUSTOM") {
+                val totalMinutes = if (type == "CUSTOM") {
+                    val d = daysInput.toIntOrNull() ?: 0
                     val h = hoursInput.toIntOrNull() ?: 0
                     val m = minutesInput.toIntOrNull() ?: 0
-                    (h * 60 + m).coerceAtLeast(1)
+                    (d * 1440 + h * 60 + m).coerceAtLeast(1)
                 } else 0
-                onConfirm(RepeatConfig(type, intervalMinutes, startMinute, endMinute))
+                onConfirm(RepeatConfig(type, totalMinutes, startMinute, endMinute))
             }) { Text("OK") }
         },
         dismissButton = {
