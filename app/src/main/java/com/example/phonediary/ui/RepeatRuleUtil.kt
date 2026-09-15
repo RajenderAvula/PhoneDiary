@@ -2,14 +2,14 @@ package com.example.phonediary.ui
 
 data class RepeatConfig(
     val type: String,           // DAILY, WEEKLY, MONTHLY, YEARLY, CUSTOM
-    val intervalMinutes: Int,   // used for CUSTOM: every N minutes (hours*60 + minutes)
-    val startMinuteOfDay: Int,  // 0-1439
-    val endMinuteOfDay: Int     // 0-1439
+    val intervalMinutes: Int,   // CUSTOM only: total minutes (days*1440 + hours*60 + minutes)
+    val startMinuteOfDay: Int,
+    val endMinuteOfDay: Int
 ) {
     fun toStored(): String = "$type|$intervalMinutes|$startMinuteOfDay|$endMinuteOfDay"
 
     companion object {
-        val NONE = RepeatConfig("NONE", 0, 480, 1200) // defaults: 8:00 AM - 8:00 PM
+        val NONE = RepeatConfig("NONE", 0, 480, 1200)
 
         fun fromStored(stored: String?): RepeatConfig {
             if (stored.isNullOrBlank() || stored == "NONE") return NONE
@@ -40,17 +40,23 @@ data class RepeatConfig(
 fun repeatDisplayLabel2(stored: String?): String {
     val config = RepeatConfig.fromStored(stored)
     if (config.type == "NONE") return "None"
-    val typeLabel = config.type.lowercase().replaceFirstChar { it.uppercase() }
+
+    val window = "${RepeatConfig.formatTimeOfDay(config.startMinuteOfDay)}–${RepeatConfig.formatTimeOfDay(config.endMinuteOfDay)}"
+
     return if (config.type == "CUSTOM") {
-        val h = config.intervalMinutes / 60
-        val m = config.intervalMinutes % 60
-        val intervalStr = when {
-            h > 0 && m > 0 -> "${h}h ${m}m"
-            h > 0 -> "${h}h"
-            else -> "${m}m"
+        val totalMinutes = config.intervalMinutes
+        val days = totalMinutes / 1440
+        val hours = (totalMinutes % 1440) / 60
+        val minutes = totalMinutes % 60
+        val parts = buildList {
+            if (days > 0) add("${days}d")
+            if (hours > 0) add("${hours}h")
+            if (minutes > 0) add("${minutes}m")
         }
-        "Every $intervalStr"
+        val intervalStr = if (parts.isEmpty()) "0m" else parts.joinToString(" ")
+        "Every $intervalStr ($window)"
     } else {
-        typeLabel
+        val typeLabel = config.type.lowercase().replaceFirstChar { it.uppercase() }
+        "$typeLabel ($window)"
     }
 }
