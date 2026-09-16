@@ -30,7 +30,8 @@ class NoteReminderReceiver : BroadcastReceiver() {
                 if (entry != null) {
                     createChannelIfNeeded(context)
                     val title = if (type == TYPE_DUE) "Due" else "Reminder"
-                    showNotification(context, entryId, type, title, entry.note ?: title)
+                    val bodyText = entry.title?.takeIf { it.isNotBlank() } ?: entry.note ?: title
+                    showNotification(context, entryId, type, title, bodyText)
 
                     if (type == TYPE_REMINDER) {
                         val repeat = entry.repeatRule
@@ -51,48 +52,30 @@ class NoteReminderReceiver : BroadcastReceiver() {
     }
 
     /**
-     * repeatRule format: "TYPE|intervalMinutes|startMinuteOfDay|endMinuteOfDay"
-     * TYPE is DAILY, WEEKLY, MONTHLY, YEARLY, or CUSTOM.
-     * For DAILY/WEEKLY/MONTHLY/YEARLY the interval is derived from TYPE.
-     * For CUSTOM the interval is intervalMinutes.
-     * start/end define the daily window the repeat is allowed to fire in;
-     * if the next computed trigger would land after the end time, it's
-     * pushed forward to the start time on the appropriate next day.
+     * repeatRule format: "TYPE|everyDays|everyHours|everyMinutes|startMinuteOfDay|endMinuteOfDay|startDateMillis"
      */
     private fun computeNextTrigger(previousMillis: Long, repeatRule: String): Long? {
         val parts = repeatRule.split("|")
-        if (parts.size != 4) return null
-        val type = parts[0]
-        val intervalMinutes = parts[1].toIntOrNull() ?: return null
-        val startMinute = parts[2].toIntOrNull() ?: 0
-        val endMinute = parts[3].toIntOrNull() ?: 1439
+        if (parts.size != 7) return null
+
+        val everyDays = parts[1].toIntOrNull() ?: 0
+        val everyHours = parts[2].toIntOrNull() ?: 0
+        val everyMinutes = parts[3].toIntOrNull() ?: 0
+        val startMinute = parts[4].toIntOrNull() ?: 0
+        val endMinute = parts[5].toIntOrNull() ?: 1439
+
+        val totalMinutes = everyDays * 1440 + everyHours * 60 + everyMinutes
+        if (totalMinutes <= 0) return null
 
         val cal = Calendar.getInstance()
         cal.timeInMillis = previousMillis
+        cal.add(Calendar.MINUTE, totalMinutes)
 
-        when (type) {
-            "DAILY" -> cal.add(Calendar.DAY_OF_MONTH, 1)
-            "WEEKLY" -> cal.add(Calendar.DAY_OF_MONTH, 7)
-            "MONTHLY" -> cal.add(Calendar.MONTH, 1)
-            "YEARLY" -> cal.add(Calendar.YEAR, 1)
-            "CUSTOM" -> {
-                if (intervalMinutes <= 0) return null
-                cal.add(Calendar.MINUTE, intervalMinutes)
-                // Check the resulting time-of-day against the allowed window.
-                val minuteOfDay = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-                if (minuteOfDay > endMinute) {
-                    // Push to start time on the next day.
-                    cal.add(Calendar.DAY_OF_MONTH, 1)
-                    cal.set(Calendar.HOUR_OF_DAY, startMinute / 60)
-                    cal.set(Calendar.MINUTE, startMinute % 60)
-                    cal.set(Calendar.SECOND, 0)
-                } else if (minuteOfDay < startMinute) {
-                    cal.set(Calendar.HOUR_OF_DAY, startMinute / 60)
-                    cal.set(Calendar.MINUTE, startMinute % 60)
-                    cal.set(Calendar.SECOND, 0)
-                }
-            }
-            else -> return null
+        val minuteOfDay = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        if (minuteOfDay > endMinute || minuteOfDay < startMinute) {
+            cal.set(Calendar.HOUR_OF_DAY, startMinute / 60)
+            cal.set(Calendar.MINUTE, startMinute % 60)
+            cal.set(Calendar.SECOND, 0)
         }
         return cal.timeInMillis
     }
@@ -116,6 +99,7 @@ class NoteReminderReceiver : BroadcastReceiver() {
             .setContentTitle(title)
             .setContentText(text)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setContentIntent(contentPendingIntent)
             .setAutoCancel(true)
             .build()
@@ -126,9 +110,16 @@ class NoteReminderReceiver : BroadcastReceiver() {
 
     private fun createChannelIfNeeded(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Note Reminders", NotificationManager.IMPORTANCE_HIGH)
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+            val existing = (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .getNotificationChannel(CHANNEL_ID)
+            if (existing == null) {
+                val channel = NotificationChannel(CHANNEL_ID, "Note Reminders", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Reminders, due dates, and repeats for Phone Diary notes"
+                    enableVibration(true)
+                }
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.createNotificationChannel(channel)
+            }
         }
     }
 
