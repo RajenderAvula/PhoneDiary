@@ -1,5 +1,6 @@
 package com.example.phonediary.ui
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlarmManager
 import android.app.TimePickerDialog
@@ -14,6 +15,7 @@ import android.provider.Settings
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -37,7 +39,9 @@ import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.BackupHelper
 import com.example.phonediary.files.EmailBackupHelper
 import com.example.phonediary.files.FileAttachmentHelper
+import com.example.phonediary.files.LocationPinHelper
 import com.example.phonediary.files.MediaResolveUtil
+import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.VideoCaptureHelper
@@ -182,6 +186,21 @@ private fun HomeTabContent() {
 
     var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
     var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = RequestPermission()
+    ) { /* result ignored; button re-checks on next tap */ }
+
+    fun pinCurrentLocation(onResult: (String) -> Unit) {
+        if (!LocationPinHelper.hasLocationPermission(context)) {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            return
+        }
+        scope.launch {
+            val url = LocationPinHelper.getCurrentLocationUrl(context)
+            if (url != null) onResult(url)
+        }
+    }
 
     fun loadAllTags() {
         scope.launch {
@@ -628,13 +647,17 @@ private fun HomeTabContent() {
         }
 
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = locationText,
-            onValueChange = { locationText = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Location URL (optional)") },
-            singleLine = true
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = locationText,
+                onValueChange = { locationText = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Location URL (optional)") },
+                singleLine = true
+            )
+            Spacer(Modifier.width(8.dp))
+            IconButton(onClick = { pinCurrentLocation { url -> locationText = url } }) { Text("📍") }
+        }
 
         Spacer(Modifier.height(8.dp))
         Text("Schedule (optional)", style = MaterialTheme.typography.bodySmall)
@@ -805,13 +828,17 @@ private fun HomeTabContent() {
                                 maxLines = 6
                             )
                             Spacer(Modifier.height(4.dp))
-                            OutlinedTextField(
-                                value = editingLocationText,
-                                onValueChange = { editingLocationText = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                placeholder = { Text("Location URL") },
-                                singleLine = true
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(
+                                    value = editingLocationText,
+                                    onValueChange = { editingLocationText = it },
+                                    modifier = Modifier.weight(1f),
+                                    placeholder = { Text("Location URL") },
+                                    singleLine = true
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                IconButton(onClick = { pinCurrentLocation { url -> editingLocationText = url } }) { Text("📍") }
+                            }
                             Spacer(Modifier.height(6.dp))
                             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 OutlinedButton(
@@ -931,6 +958,7 @@ private fun HomeTabContent() {
                                             editingDueAtMillis = entry.dueAtMillis
                                             editingRepeatConfig = RepeatConfig.fromStored(entry.repeatRule)
                                         }) { Text("Edit") }
+                                        TextButton(onClick = { NoteShareHelper.shareNote(context, entry) }) { Text("📤") }
                                         TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
                                     }
                                 }
