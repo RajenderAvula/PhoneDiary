@@ -1,11 +1,13 @@
 package com.example.phonediary.ui
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,6 +18,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
+import com.example.phonediary.files.LocationPinHelper
 import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NotePrintHelper
 import com.example.phonediary.files.SavedAttachment
@@ -72,6 +75,21 @@ fun FullScreenNoteEditor(
     var dueAtMillis by remember { mutableStateOf(initialDueAtMillis) }
     var repeatRule by remember { mutableStateOf(initialRepeatRule) }
     var showRepeatDialogFS by remember { mutableStateOf(false) }
+
+    val locationPermissionLauncherFS = rememberLauncherForActivityResult(
+        contract = RequestPermission()
+    ) { }
+
+    fun pinCurrentLocationFS() {
+        if (!LocationPinHelper.hasLocationPermission(context)) {
+            locationPermissionLauncherFS.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            return
+        }
+        scope.launch {
+            val url = LocationPinHelper.getCurrentLocationUrl(context)
+            if (url != null) locationUrl = url
+        }
+    }
 
     fun addTagFromInput() {
         val cleaned = tagInput.trim().removePrefix("#")
@@ -207,13 +225,17 @@ fun FullScreenNoteEditor(
             )
 
             Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = locationUrl,
-                onValueChange = { locationUrl = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Location URL (optional)") },
-                singleLine = true
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = locationUrl,
+                    onValueChange = { locationUrl = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Location URL (optional)") },
+                    singleLine = true
+                )
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = { pinCurrentLocationFS() }) { Text("📍") }
+            }
 
             Spacer(Modifier.height(12.dp))
             Text("Tags", style = MaterialTheme.typography.titleSmall)
