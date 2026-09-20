@@ -115,7 +115,7 @@ object CalendarWriter {
 
     private fun findEventIdForEntry(context: Context, calendarId: Long, entryId: Long): Long? {
         val projection = arrayOf(CalendarContract.Events._ID, CalendarContract.Events.DESCRIPTION)
-        val selection = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DESCRIPTION} LIKE ?"
+        val selection = "${CalendarContract.Events.CALENDAR_ID} = ? AND ${CalendarContract.Events.DESCRIPTION} LIKE ? AND ${CalendarContract.Events.DELETED} != 1"
         val marker = idMarker(entryId)
         val selectionArgs = arrayOf(calendarId.toString(), "%$marker%")
 
