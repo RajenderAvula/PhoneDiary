@@ -18,9 +18,11 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
+import com.example.phonediary.files.LocationOpenHelper
 import com.example.phonediary.files.LocationPinHelper
 import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NotePrintHelper
+import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.VideoCaptureHelper
 import kotlinx.coroutines.launch
@@ -161,9 +163,35 @@ fun FullScreenNoteEditor(
                 },
                 actions = {
                     TextButton(onClick = {
-                        NotePrintHelper.printNote(context, title.ifBlank { "Phone Diary Note" }, text, tags)
+                        NoteShareHelper.shareFields(
+                            context = context,
+                            title = title.ifBlank { null },
+                            note = text.ifBlank { null },
+                            timestampMillis = System.currentTimeMillis(),
+                            locationUrl = locationUrl.ifBlank { null },
+                            tags = tags,
+                            reminderAtMillis = reminderAtMillis,
+                            dueAtMillis = dueAtMillis,
+                            repeatRule = repeatRule,
+                            attachmentNames = existingAttachmentNames + newAttachments.map { it.name }
+                        )
                     }) {
-                        Text("🖨 Print")
+                        Text("📤")
+                    }
+                    TextButton(onClick = {
+                        NotePrintHelper.printNote(
+                            context = context,
+                            title = title.ifBlank { "Phone Diary Note" },
+                            noteText = text,
+                            tags = tags,
+                            locationUrl = locationUrl.ifBlank { null },
+                            reminderAtMillis = reminderAtMillis,
+                            dueAtMillis = dueAtMillis,
+                            repeatRule = repeatRule,
+                            attachmentNames = existingAttachmentNames + newAttachments.map { it.name }
+                        )
+                    }) {
+                        Text("🖨")
                     }
                     TextButton(onClick = {
                         onSave(
@@ -235,6 +263,9 @@ fun FullScreenNoteEditor(
                 )
                 Spacer(Modifier.width(8.dp))
                 IconButton(onClick = { pinCurrentLocationFS() }) { Text("📍") }
+                if (locationUrl.isNotBlank()) {
+                    IconButton(onClick = { LocationOpenHelper.open(context, locationUrl) }) { Text("🔗") }
+                }
             }
 
             Spacer(Modifier.height(12.dp))
