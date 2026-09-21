@@ -9,6 +9,7 @@ object NoteReminderScheduler {
 
     private const val REMINDER_OFFSET = 500000
     private const val DUE_OFFSET = 700000
+    private const val REPEAT_OFFSET = 900000
 
     fun scheduleReminder(context: Context, entryId: Long, triggerAtMillis: Long) =
         schedule(context, entryId, triggerAtMillis, NoteReminderReceiver.TYPE_REMINDER)
@@ -16,14 +17,24 @@ object NoteReminderScheduler {
     fun scheduleDue(context: Context, entryId: Long, triggerAtMillis: Long) =
         schedule(context, entryId, triggerAtMillis, NoteReminderReceiver.TYPE_DUE)
 
+    fun scheduleRepeat(context: Context, entryId: Long, triggerAtMillis: Long) =
+        schedule(context, entryId, triggerAtMillis, NoteReminderReceiver.TYPE_REPEAT)
+
     fun cancelReminder(context: Context, entryId: Long) =
         cancel(context, entryId, NoteReminderReceiver.TYPE_REMINDER)
 
     fun cancelDue(context: Context, entryId: Long) =
         cancel(context, entryId, NoteReminderReceiver.TYPE_DUE)
 
+    fun cancelRepeat(context: Context, entryId: Long) =
+        cancel(context, entryId, NoteReminderReceiver.TYPE_REPEAT)
+
     private fun requestCode(entryId: Long, type: String): Int {
-        val offset = if (type == NoteReminderReceiver.TYPE_REMINDER) REMINDER_OFFSET else DUE_OFFSET
+        val offset = when (type) {
+            NoteReminderReceiver.TYPE_REMINDER -> REMINDER_OFFSET
+            NoteReminderReceiver.TYPE_DUE -> DUE_OFFSET
+            else -> REPEAT_OFFSET
+        }
         return offset + entryId.toInt()
     }
 
@@ -33,6 +44,7 @@ object NoteReminderScheduler {
             action = NoteReminderReceiver.ACTION_FIRE
             putExtra(NoteReminderReceiver.EXTRA_ENTRY_ID, entryId)
             putExtra(NoteReminderReceiver.EXTRA_TYPE, type)
+            putExtra(NoteReminderReceiver.EXTRA_TRIGGER_MILLIS, triggerAtMillis)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context, requestCode(entryId, type), intent,
