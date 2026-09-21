@@ -39,6 +39,7 @@ import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.BackupHelper
 import com.example.phonediary.files.EmailBackupHelper
 import com.example.phonediary.files.FileAttachmentHelper
+import com.example.phonediary.files.LocationOpenHelper
 import com.example.phonediary.files.LocationPinHelper
 import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NoteShareHelper
@@ -189,7 +190,7 @@ private fun HomeTabContent() {
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = RequestPermission()
-    ) { /* result ignored; button re-checks on next tap */ }
+    ) { }
 
     fun pinCurrentLocation(onResult: (String) -> Unit) {
         if (!LocationPinHelper.hasLocationPermission(context)) {
@@ -410,6 +411,7 @@ private fun HomeTabContent() {
             dayLogEntries.filter { it.id in selectedEntryIds }.forEach {
                 NoteReminderScheduler.cancelReminder(context, it.id)
                 NoteReminderScheduler.cancelDue(context, it.id)
+                NoteReminderScheduler.cancelRepeat(context, it.id)
                 CalendarWriter.deleteEntryEvent(context, it.id)
                 dao.delete(it)
             }
@@ -423,6 +425,7 @@ private fun HomeTabContent() {
         scope.launch {
             NoteReminderScheduler.cancelReminder(context, entry.id)
             NoteReminderScheduler.cancelDue(context, entry.id)
+            NoteReminderScheduler.cancelRepeat(context, entry.id)
             CalendarWriter.deleteEntryEvent(context, entry.id)
             AppDatabase.getInstance(context).logEntryDao().delete(entry)
             openDate(dateKey)
@@ -657,6 +660,9 @@ private fun HomeTabContent() {
             )
             Spacer(Modifier.width(8.dp))
             IconButton(onClick = { pinCurrentLocation { url -> locationText = url } }) { Text("📍") }
+            if (locationText.isNotBlank()) {
+                IconButton(onClick = { LocationOpenHelper.open(context, locationText) }) { Text("🔗") }
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -759,6 +765,11 @@ private fun HomeTabContent() {
                         )
                         reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
                         dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, newId, it) }
+                        if (repeatConfig.type != "NONE") {
+                            RepeatScheduling.firstTrigger(repeatConfig.toStored())?.let {
+                                NoteReminderScheduler.scheduleRepeat(context, newId, it)
+                            }
+                        }
 
                         AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
                             CalendarWriter.refreshEntry(context, it)
@@ -838,6 +849,9 @@ private fun HomeTabContent() {
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 IconButton(onClick = { pinCurrentLocation { url -> editingLocationText = url } }) { Text("📍") }
+                                if (editingLocationText.isNotBlank()) {
+                                    IconButton(onClick = { LocationOpenHelper.open(context, editingLocationText) }) { Text("🔗") }
+                                }
                             }
                             Spacer(Modifier.height(6.dp))
                             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -916,8 +930,14 @@ private fun HomeTabContent() {
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
                                         NoteReminderScheduler.cancelReminder(context, entry.id)
                                         NoteReminderScheduler.cancelDue(context, entry.id)
+                                        NoteReminderScheduler.cancelRepeat(context, entry.id)
                                         editingReminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, entry.id, it) }
                                         editingDueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, entry.id, it) }
+                                        if (editingRepeatConfig.type != "NONE") {
+                                            RepeatScheduling.firstTrigger(editingRepeatConfig.toStored())?.let {
+                                                NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
+                                            }
+                                        }
                                         CalendarWriter.refreshEntry(context, updated)
                                         editingEntryId = null
                                         openDate(date)
@@ -962,16 +982,25 @@ private fun HomeTabContent() {
                                         TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
                                     }
                                 }
-                                entry.locationUrl?.let { Text("📍 $it", style = MaterialTheme.typography.bodySmall) }
+                                entry.locationUrl?.let {
+                                    Text(
+                                        "📍 $it",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.clickable { LocationOpenHelper.open(context, it) }
+                                    )
+                                }
                                 val entryTagList = TagListUtil.toList(entry.tags)
                                 if (entryTagList.isNotEmpty()) {
                                     Text(entryTagList.joinToString(" ") { "#$it" }, style = MaterialTheme.typography.bodySmall)
                                 }
                                 entry.reminderAtMillis?.let {
-                                    val repeatSuffix = entry.repeatRule?.takeIf { r -> r != "NONE" }?.let { r -> " (repeats: ${repeatDisplayLabel2(r)})" } ?: ""
-                                    Text("⏰ ${dateTimeFormat.format(it)}$repeatSuffix", style = MaterialTheme.typography.bodySmall)
+                                    Text("⏰ ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall)
                                 }
                                 entry.dueAtMillis?.let { Text("📅 Due ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall) }
+                                entry.repeatRule?.takeIf { it != "NONE" }?.let {
+                                    Text("🔁 ${repeatDisplayLabel2(it)}", style = MaterialTheme.typography.bodySmall)
+                                }
                                 AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
                                     var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
                                     LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
@@ -1082,8 +1111,14 @@ private fun HomeTabContent() {
                                 AppDatabase.getInstance(context).logEntryDao().update(updated)
                                 NoteReminderScheduler.cancelReminder(context, entry.id)
                                 NoteReminderScheduler.cancelDue(context, entry.id)
+                                NoteReminderScheduler.cancelRepeat(context, entry.id)
                                 result.reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, entry.id, it) }
                                 result.dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, entry.id, it) }
+                                if (result.repeatRule != "NONE") {
+                                    RepeatScheduling.firstTrigger(result.repeatRule)?.let {
+                                        NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
+                                    }
+                                }
                                 CalendarWriter.refreshEntry(context, updated)
                                 loadAllTags()
                                 selectedDate?.let { openDate(it) }
