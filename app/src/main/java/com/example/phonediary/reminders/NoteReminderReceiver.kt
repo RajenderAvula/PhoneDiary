@@ -30,15 +30,24 @@ class NoteReminderReceiver : BroadcastReceiver() {
                 val entry = dao.getById(entryId)
                 if (entry != null) {
                     createChannelIfNeeded(context)
-                    val title = when (type) {
+
+                    val typeLabel = when (type) {
                         TYPE_DUE -> "Due"
                         TYPE_REPEAT -> "Repeat"
                         else -> "Reminder"
                     }
-                    val bodyText = entry.title?.takeIf { it.isNotBlank() } ?: entry.note ?: title
-                    showNotification(context, entryId, type, title, bodyText)
 
-                    // Repeat is fully independent of Reminder/Due — it re-arms itself every time it fires.
+                    // Notification TITLE is always the note's own name, so you
+                    // immediately see which note it's about — never a generic word.
+                    val noteName = entry.title?.takeIf { it.isNotBlank() }
+                        ?: entry.note?.takeIf { it.isNotBlank() }?.take(60)
+                        ?: "Untitled note"
+
+                    val noteSnippet = entry.note?.takeIf { it.isNotBlank() && it != noteName }?.take(80)
+                    val bodyText = if (noteSnippet != null) "$typeLabel • $noteSnippet" else typeLabel
+
+                    showNotification(context, entryId, type, noteName, bodyText)
+
                     if (type == TYPE_REPEAT) {
                         val next = RepeatScheduling.nextTrigger(triggeredAt, entry.repeatRule)
                         if (next != null) {
