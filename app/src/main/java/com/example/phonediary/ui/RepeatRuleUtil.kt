@@ -91,14 +91,12 @@ fun repeatDisplayLabel2(stored: String?): String {
     return "${repeatTypeLabel(c.type)}$everyStr, $window, from $startDateStr"
 }
 
-/**
- * Scheduling math shared between the UI (to compute the first trigger)
- * and the alarm receiver (to compute each subsequent trigger). Repeat is
- * fully independent of Reminder/Due — it has its own alarm chain.
- */
 object RepeatScheduling {
 
-    /** First time this repeat should fire, honoring the start date/time and window. Null if not repeating. */
+    private const val MAX_ADVANCE_ITERATIONS = 100000
+    /** Never fire sooner than this after "now" — guards against near-instant re-fire loops. */
+    private const val MIN_FUTURE_BUFFER_MILLIS = 5_000L
+
     fun firstTrigger(stored: String?): Long? {
         val c = RepeatConfig.fromStored(stored)
         if (c.type == "NONE") return null
@@ -112,16 +110,22 @@ object RepeatScheduling {
         cal.set(Calendar.SECOND, 0)
         cal.set(Calendar.MILLISECOND, 0)
 
-        val now = System.currentTimeMillis()
+        val floor = System.currentTimeMillis() + MIN_FUTURE_BUFFER_MILLIS
         var guard = 0
-        while (cal.timeInMillis <= now && guard < 100000) {
+        while (cal.timeInMillis <= floor && guard < MAX_ADVANCE_ITERATIONS) {
             cal.add(Calendar.MINUTE, total)
             guard++
         }
         return cal.timeInMillis
     }
 
-    /** Next trigger after [previousMillis], honoring the start/end time window. Null if not repeating. */
+    /**
+     * Next trigger after [previousMillis], honoring the start/end window.
+     * Always advances past "now" — even if [previousMillis] is far in the
+     * past (device was off, Doze delayed delivery, etc.) — so a single
+     * missed cycle never turns into a rapid-fire loop of near-instant
+     * re-triggers.
+     */
     fun nextTrigger(previousMillis: Long, stored: String?): Long? {
         val c = RepeatConfig.fromStored(stored)
         if (c.type == "NONE") return null
@@ -130,13 +134,25 @@ object RepeatScheduling {
 
         val cal = Calendar.getInstance()
         cal.timeInMillis = previousMillis
-        cal.add(Calendar.MINUTE, total)
+
+        val floor = System.currentTimeMillis() + MIN_FUTURE_BUFFER_MILLIS
+        var guard = 0
+        do {
+            cal.add(Calendar.MINUTE, total)
+            guard++
+        } while (cal.timeInMillis <= floor && guard < MAX_ADVANCE_ITERATIONS)
 
         val minuteOfDay = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
         if (minuteOfDay > c.endMinuteOfDay || minuteOfDay < c.startMinuteOfDay) {
             cal.set(Calendar.HOUR_OF_DAY, c.startMinuteOfDay / 60)
             cal.set(Calendar.MINUTE, c.startMinuteOfDay % 60)
             cal.set(Calendar.SECOND, 0)
+            // Pushing to the window start may land back at/before "now" too — advance a day at a time if so.
+            var dayGuard = 0
+            while (cal.timeInMillis <= floor && dayGuard < 400) {
+                cal.add(Calendar.DAY_OF_MONTH, 1)
+                dayGuard++
+            }
         }
         return cal.timeInMillis
     }
