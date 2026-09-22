@@ -153,11 +153,18 @@ fun RepeatPickerDialog(
                 }
             }
         },
+        
         confirmButton = {
             TextButton(onClick = {
-                val d = daysInput.toIntOrNull() ?: 0
-                val h = hoursInput.toIntOrNull() ?: 0
-                val m = minutesInput.toIntOrNull() ?: 0
+                var d = daysInput.toIntOrNull() ?: 0
+                var h = hoursInput.toIntOrNull() ?: 0
+                var m = minutesInput.toIntOrNull() ?: 0
+                if (d == 0 && h == 0 && m == 0) {
+                    // Nobody set an interval — fall back to a sane default for the chosen type
+                    // rather than saving a zero-interval repeat.
+                    val (defD, defH, defM) = RepeatConfig.defaultEveryFor(type)
+                    d = defD; h = defH; m = defM
+                }
                 onConfirm(RepeatConfig(type, d, h, m, startMinute, endMinute, startDateMillis))
             }) { Text("Set") }
         },
