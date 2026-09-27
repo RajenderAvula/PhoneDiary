@@ -54,6 +54,7 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
+import com.example.phonediary.files.TextScanHelper
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -147,6 +148,22 @@ private fun HomeTabContent() {
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
 
     var selectedCalendarDateTimeMillis by remember { mutableStateOf<Long?>(null) }
+    var isScanningText by remember { mutableStateOf(false) }
+
+    val scanImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            isScanningText = true
+            scope.launch {
+                val recognizedText = TextScanHelper.recognizeTextFromImage(context, uri)
+                if (recognizedText != null) {
+                    noteText = if (noteText.isBlank()) recognizedText else "$noteText\n$recognizedText"
+                }
+                isScanningText = false
+            }
+        }
+    }
 
     var reminderAtMillis by remember { mutableStateOf<Long?>(null) }
     var dueAtMillis by remember { mutableStateOf<Long?>(null) }
@@ -588,6 +605,23 @@ private fun HomeTabContent() {
         )
         Spacer(Modifier.height(8.dp))
 
+       /* Row(verticalAlignment = Alignment.Top) {
+            OutlinedTextField(
+                value = noteText,
+                onValueChange = { noteText = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("What are you doing?") },
+                minLines = 1,
+                maxLines = 6
+            )
+            Spacer(Modifier.width(8.dp))
+            IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
+            IconButton(onClick = {
+                fullScreenEditingEntryId = null
+                fullScreenHighlightQuery = null
+                showFullScreenEditor = true
+            }) { Text("⛶") }
+        }*/
         Row(verticalAlignment = Alignment.Top) {
             OutlinedTextField(
                 value = noteText,
@@ -599,6 +633,10 @@ private fun HomeTabContent() {
             )
             Spacer(Modifier.width(8.dp))
             IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
+            IconButton(
+                enabled = !isScanningText,
+                onClick = { scanImagePickerLauncher.launch("image/*") }
+            ) { Text(if (isScanningText) "⏳" else "📷") }
             IconButton(onClick = {
                 fullScreenEditingEntryId = null
                 fullScreenHighlightQuery = null
