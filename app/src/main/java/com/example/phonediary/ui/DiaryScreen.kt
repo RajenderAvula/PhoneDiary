@@ -135,33 +135,8 @@ private fun HomeTabContent() {
 
     val highlightBg = MaterialTheme.colorScheme.primary
     val highlightFg = MaterialTheme.colorScheme.onPrimary
-val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
-    var isStreamingListening by remember { mutableStateOf(false) }
-    var streamingPartialText by remember { mutableStateOf("") }
-    var streamingError by remember { mutableStateOf<String?>(null) }
 
-    fun toggleStreamingSpeech() {
-        if (isStreamingListening) {
-            streamingSpeechHelper.stop()
-            isStreamingListening = false
-            return
-        }
-        streamingError = null
-        streamingPartialText = ""
-        streamingSpeechHelper.start(
-            onPartialResult = { partial -> streamingPartialText = partial },
-            onFinalResult = { finalText ->
-                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
-                streamingPartialText = ""
-            },
-            onError = { message -> streamingError = message; streamingPartialText = "" },
-            onListeningStateChanged = { listening -> isStreamingListening = listening }
-        )
-    }
 
-    DisposableEffect(Unit) {
-        onDispose { streamingSpeechHelper.stop() }
-    }
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
@@ -284,6 +259,33 @@ val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
         selectedCalendarDateTimeMillis = null
         noteTags = emptyList()
         mainTagInput = ""
+    }
+    val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
+    var isStreamingListening by remember { mutableStateOf(false) }
+    var streamingPartialText by remember { mutableStateOf("") }
+    var streamingError by remember { mutableStateOf<String?>(null) }
+
+    fun toggleStreamingSpeech() {
+        if (isStreamingListening) {
+            streamingSpeechHelper.stop()
+            isStreamingListening = false
+            return
+        }
+        streamingError = null
+        streamingPartialText = ""
+        streamingSpeechHelper.start(
+            onPartialResult = { partial -> streamingPartialText = partial },
+            onFinalResult = { finalText ->
+                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
+                streamingPartialText = ""
+            },
+            onError = { message -> streamingError = message; streamingPartialText = "" },
+            onListeningStateChanged = { listening -> isStreamingListening = listening }
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { streamingSpeechHelper.stop() }
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
