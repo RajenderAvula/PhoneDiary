@@ -51,4 +51,6 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    implementation("com.google.mlkit:text-recognition-bundled:16.0.0")
 }
