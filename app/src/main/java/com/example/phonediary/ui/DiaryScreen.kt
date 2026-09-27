@@ -55,6 +55,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
 import com.example.phonediary.files.TextScanHelper
+import com.example.phonediary.files.StreamingSpeechHelper
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -134,7 +135,33 @@ private fun HomeTabContent() {
 
     val highlightBg = MaterialTheme.colorScheme.primary
     val highlightFg = MaterialTheme.colorScheme.onPrimary
+val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
+    var isStreamingListening by remember { mutableStateOf(false) }
+    var streamingPartialText by remember { mutableStateOf("") }
+    var streamingError by remember { mutableStateOf<String?>(null) }
 
+    fun toggleStreamingSpeech() {
+        if (isStreamingListening) {
+            streamingSpeechHelper.stop()
+            isStreamingListening = false
+            return
+        }
+        streamingError = null
+        streamingPartialText = ""
+        streamingSpeechHelper.start(
+            onPartialResult = { partial -> streamingPartialText = partial },
+            onFinalResult = { finalText ->
+                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
+                streamingPartialText = ""
+            },
+            onError = { message -> streamingError = message; streamingPartialText = "" },
+            onListeningStateChanged = { listening -> isStreamingListening = listening }
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { streamingSpeechHelper.stop() }
+    }
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
@@ -631,8 +658,12 @@ private fun HomeTabContent() {
                 minLines = 1,
                 maxLines = 6
             )
+           
             Spacer(Modifier.width(8.dp))
             IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
+            IconButton(onClick = { toggleStreamingSpeech() }) {
+                Text(if (isStreamingListening) "🔴" else "🎙️")
+            }
             IconButton(
                 enabled = !isScanningText,
                 onClick = { scanImagePickerLauncher.launch("image/*") }
@@ -642,6 +673,20 @@ private fun HomeTabContent() {
                 fullScreenHighlightQuery = null
                 showFullScreenEditor = true
             }) { Text("⛶") }
+        }
+
+        
+        if (isStreamingListening || streamingPartialText.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (streamingPartialText.isNotBlank()) "🎙️ $streamingPartialText" else "🎙️ Listening…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        streamingError?.let {
+            Spacer(Modifier.height(4.dp))
+            Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
 
         Spacer(Modifier.height(8.dp))
