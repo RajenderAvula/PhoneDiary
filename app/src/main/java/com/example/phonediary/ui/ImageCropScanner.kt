@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.files.TextScanHelper
 import kotlinx.coroutines.launch
-import kotlin.math.max
 import kotlin.math.min
 
 private const val TL = 0
@@ -38,12 +37,6 @@ private const val TR = 1
 private const val BR = 2
 private const val BL = 3
 
-/**
- * A perspective-crop scanner: pinch-zoom to magnify for precise
- * placement, drag any of the four corner handles independently
- * (not just a fixed rectangle), preview the warped result, then
- * extract text from it via ML Kit OCR — all on-device.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ImageCropScanner(
@@ -62,19 +55,29 @@ fun ImageCropScanner(
 
     var corners by remember { mutableStateOf(listOf(Offset.Zero, Offset.Zero, Offset.Zero, Offset.Zero)) }
 
+    // Custom rotation, applied to the SOURCE bitmap before cropping — a precise
+    // text field (0.1 to 360 degrees), not just 90-degree quick-rotate buttons.
+    var rotationInput by remember { mutableStateOf("0") }
+    var appliedRotationDegrees by remember { mutableStateOf(0f) }
+
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf<String?>(null) }
+    var rotationError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(imageUri) {
         sourceBitmap = TextScanHelper.loadBitmap(context, imageUri)
     }
 
-    // "Fit" mapping of the bitmap into the container — corners live in
-    // this coordinate space, and are converted back to bitmap pixels
-    // for the actual perspective extraction.
-    val fit = remember(sourceBitmap, containerSize) {
-        val bmp = sourceBitmap
+    // Bitmap actually displayed/cropped — original bitmap rotated by the applied angle.
+    val displayBitmap = remember(sourceBitmap, appliedRotationDegrees) {
+        val bmp = sourceBitmap ?: return@remember null
+        if (appliedRotationDegrees == 0f) bmp
+        else rotateBitmap(bmp, appliedRotationDegrees)
+    }
+
+    val fit = remember(displayBitmap, containerSize) {
+        val bmp = displayBitmap
         if (bmp == null || containerSize.width == 0 || containerSize.height == 0) null
         else {
             val fitScale = min(
@@ -89,26 +92,34 @@ fun ImageCropScanner(
         }
     }
 
-    // Initialize corners inset within the drawn image area, once we know it.
+    // Re-center default corners whenever the fit geometry changes (including after rotation).
     LaunchedEffect(fit) {
         val f = fit ?: return@LaunchedEffect
-        if (corners.all { it == Offset.Zero }) {
-            val insetX = f.drawnW * 0.1f
-            val insetY = f.drawnH * 0.1f
-            corners = listOf(
-                Offset(f.offsetX + insetX, f.offsetY + insetY),                     // TL
-                Offset(f.offsetX + f.drawnW - insetX, f.offsetY + insetY),          // TR
-                Offset(f.offsetX + f.drawnW - insetX, f.offsetY + f.drawnH - insetY), // BR
-                Offset(f.offsetX + insetX, f.offsetY + f.drawnH - insetY)           // BL
-            )
+        val insetX = f.drawnW * 0.1f
+        val insetY = f.drawnH * 0.1f
+        corners = listOf(
+            Offset(f.offsetX + insetX, f.offsetY + insetY),
+            Offset(f.offsetX + f.drawnW - insetX, f.offsetY + insetY),
+            Offset(f.offsetX + f.drawnW - insetX, f.offsetY + f.drawnH - insetY),
+            Offset(f.offsetX + insetX, f.offsetY + f.drawnH - insetY)
+        )
+        previewBitmap = null
+    }
+
+    fun applyRotation() {
+        val degrees = rotationInput.toFloatOrNull()
+        if (degrees == null || degrees < 0.1f || degrees > 360f) {
+            rotationError = "Enter an angle between 0.1 and 360"
+            return
         }
+        rotationError = null
+        appliedRotationDegrees = degrees
     }
 
     fun buildWarpedBitmap(): Bitmap? {
-        val bmp = sourceBitmap ?: return null
+        val bmp = displayBitmap ?: return null
         val f = fit ?: return null
 
-        // Convert corners from container-fit space back to original bitmap pixel space.
         fun toBitmapSpace(p: Offset) = Offset(
             (p.x - f.offsetX) / f.fitScale,
             (p.y - f.offsetY) / f.fitScale
@@ -164,8 +175,47 @@ fun ImageCropScanner(
             Text(
                 "Drag each corner to fit the text region. Pinch to zoom for precision.",
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(12.dp)
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
             )
+
+            // ---- Custom rotation control ----
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = rotationInput,
+                    onValueChange = { input ->
+                        rotationInput = input.filter { it.isDigit() || it == '.' }
+                    },
+                    modifier = Modifier.width(100.dp),
+                    singleLine = true,
+                    label = { Text("Angle °") },
+                    placeholder = { Text("0.1–360") }
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { applyRotation() }) { Text("Rotate") }
+                Spacer(Modifier.width(8.dp))
+                if (appliedRotationDegrees != 0f) {
+                    TextButton(onClick = {
+                        rotationInput = "0"
+                        appliedRotationDegrees = 0f
+                    }) { Text("Reset") }
+                }
+            }
+            rotationError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 12.dp))
+            }
+            if (appliedRotationDegrees != 0f) {
+                Text(
+                    "Applied: ${appliedRotationDegrees}°",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
 
             Box(
                 modifier = Modifier
@@ -180,7 +230,7 @@ fun ImageCropScanner(
                         }
                     }
             ) {
-                val bmp = sourceBitmap
+                val bmp = displayBitmap
                 if (bmp != null) {
                     Box(
                         modifier = Modifier
@@ -315,4 +365,9 @@ private fun distance(a: Offset, b: Offset): Float {
     val dx = a.x - b.x
     val dy = a.y - b.y
     return kotlin.math.sqrt(dx * dx + dy * dy)
+}
+
+private fun rotateBitmap(source: Bitmap, degrees: Float): Bitmap {
+    val matrix = Matrix().apply { postRotate(degrees) }
+    return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
 }
