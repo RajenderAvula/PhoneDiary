@@ -10,10 +10,6 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-/**
- * On-device OCR using ML Kit's bundled Latin text model — no network
- * call, no model download, works fully offline including airplane mode.
- */
 object TextScanHelper {
 
     private val recognizer by lazy {
@@ -22,8 +18,11 @@ object TextScanHelper {
 
     suspend fun recognizeTextFromImage(context: Context, imageUri: Uri): String? {
         val bitmap = loadBitmap(context, imageUri) ?: return null
-        val image = InputImage.fromBitmap(bitmap, 0)
+        return recognizeTextFromBitmap(bitmap)
+    }
 
+    suspend fun recognizeTextFromBitmap(bitmap: Bitmap): String? {
+        val image = InputImage.fromBitmap(bitmap, 0)
         return suspendCancellableCoroutine { continuation ->
             recognizer.process(image)
                 .addOnSuccessListener { result ->
@@ -36,7 +35,7 @@ object TextScanHelper {
         }
     }
 
-    private fun loadBitmap(context: Context, uri: Uri): Bitmap? {
+    fun loadBitmap(context: Context, uri: Uri): Bitmap? {
         return try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 BitmapFactory.decodeStream(input)
