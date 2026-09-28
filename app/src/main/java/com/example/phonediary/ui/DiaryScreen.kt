@@ -45,6 +45,7 @@ import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
+import com.example.phonediary.files.StreamingSpeechHelper
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.NoteReminderScheduler
 import com.example.phonediary.usage.UsageStatsCollector
@@ -54,8 +55,6 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
-import com.example.phonediary.files.TextScanHelper
-import com.example.phonediary.files.StreamingSpeechHelper
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -136,7 +135,6 @@ private fun HomeTabContent() {
     val highlightBg = MaterialTheme.colorScheme.primary
     val highlightFg = MaterialTheme.colorScheme.onPrimary
 
-
     var dates by remember { mutableStateOf(listOf<String>()) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
@@ -150,30 +148,6 @@ private fun HomeTabContent() {
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
 
     var selectedCalendarDateTimeMillis by remember { mutableStateOf<Long?>(null) }
-    var isScanningText by remember { mutableStateOf(false) }
-    var scanImageUri by remember { mutableStateOf<Uri?>(null) }
-
-    /*val scanImagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            isScanningText = true
-            scope.launch {
-                val recognizedText = TextScanHelper.recognizeTextFromImage(context, uri)
-                if (recognizedText != null) {
-                    noteText = if (noteText.isBlank()) recognizedText else "$noteText\n$recognizedText"
-                }
-                isScanningText = false
-            }
-        }
-    }*/
-    val scanImagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            scanImageUri = uri
-        }
-    }
 
     var reminderAtMillis by remember { mutableStateOf<Long?>(null) }
     var dueAtMillis by remember { mutableStateOf<Long?>(null) }
@@ -214,6 +188,47 @@ private fun HomeTabContent() {
 
     var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
     var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
+
+    // ---- OCR image scan ----
+    var isScanningText by remember { mutableStateOf(false) }
+    var scanImageUri by remember { mutableStateOf<Uri?>(null) }
+
+    val scanImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scanImageUri = uri
+        }
+    }
+
+    // ---- Streaming (live partial) speech ----
+    val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
+    var isStreamingListening by remember { mutableStateOf(false) }
+    var streamingPartialText by remember { mutableStateOf("") }
+    var streamingError by remember { mutableStateOf<String?>(null) }
+
+    fun toggleStreamingSpeech() {
+        if (isStreamingListening) {
+            streamingSpeechHelper.stop()
+            isStreamingListening = false
+            return
+        }
+        streamingError = null
+        streamingPartialText = ""
+        streamingSpeechHelper.start(
+            onPartialResult = { partial -> streamingPartialText = partial },
+            onFinalResult = { finalText ->
+                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
+                streamingPartialText = ""
+            },
+            onError = { message -> streamingError = message; streamingPartialText = "" },
+            onListeningStateChanged = { listening -> isStreamingListening = listening }
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { streamingSpeechHelper.stop() }
+    }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = RequestPermission()
@@ -267,33 +282,6 @@ private fun HomeTabContent() {
         selectedCalendarDateTimeMillis = null
         noteTags = emptyList()
         mainTagInput = ""
-    }
-    val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
-    var isStreamingListening by remember { mutableStateOf(false) }
-    var streamingPartialText by remember { mutableStateOf("") }
-    var streamingError by remember { mutableStateOf<String?>(null) }
-
-    fun toggleStreamingSpeech() {
-        if (isStreamingListening) {
-            streamingSpeechHelper.stop()
-            isStreamingListening = false
-            return
-        }
-        streamingError = null
-        streamingPartialText = ""
-        streamingSpeechHelper.start(
-            onPartialResult = { partial -> streamingPartialText = partial },
-            onFinalResult = { finalText ->
-                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
-                streamingPartialText = ""
-            },
-            onError = { message -> streamingError = message; streamingPartialText = "" },
-            onListeningStateChanged = { listening -> isStreamingListening = listening }
-        )
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { streamingSpeechHelper.stop() }
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -642,23 +630,6 @@ private fun HomeTabContent() {
         )
         Spacer(Modifier.height(8.dp))
 
-       /* Row(verticalAlignment = Alignment.Top) {
-            OutlinedTextField(
-                value = noteText,
-                onValueChange = { noteText = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("What are you doing?") },
-                minLines = 1,
-                maxLines = 6
-            )
-            Spacer(Modifier.width(8.dp))
-            IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
-            IconButton(onClick = {
-                fullScreenEditingEntryId = null
-                fullScreenHighlightQuery = null
-                showFullScreenEditor = true
-            }) { Text("⛶") }
-        }*/
         Row(verticalAlignment = Alignment.Top) {
             OutlinedTextField(
                 value = noteText,
@@ -668,7 +639,6 @@ private fun HomeTabContent() {
                 minLines = 1,
                 maxLines = 6
             )
-           
             Spacer(Modifier.width(8.dp))
             IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
             IconButton(onClick = { toggleStreamingSpeech() }) {
@@ -685,7 +655,6 @@ private fun HomeTabContent() {
             }) { Text("⛶") }
         }
 
-        
         if (isStreamingListening || streamingPartialText.isNotBlank()) {
             Spacer(Modifier.height(4.dp))
             Text(
@@ -1148,16 +1117,6 @@ private fun HomeTabContent() {
         val editingId = fullScreenEditingEntryId
         var loadedEntry by remember(editingId) { mutableStateOf<LogEntry?>(null) }
         var isLoaded by remember(editingId) { mutableStateOf(editingId == null) }
-        scanImageUri?.let { uri ->
-        ImageCropScanner(
-            imageUri = uri,
-            onExtractedText = { recognizedText ->
-                noteText = if (noteText.isBlank()) recognizedText else "$noteText\n$recognizedText"
-                scanImageUri = null
-            },
-            onDismiss = { scanImageUri = null }
-        )
-        }
 
         LaunchedEffect(editingId) {
             if (editingId != null) {
@@ -1237,6 +1196,17 @@ private fun HomeTabContent() {
                 }
             )
         }
+    }
+
+    scanImageUri?.let { uri ->
+        ImageCropScanner(
+            imageUri = uri,
+            onExtractedText = { recognizedText ->
+                noteText = if (noteText.isBlank()) recognizedText else "$noteText\n$recognizedText"
+                scanImageUri = null
+            },
+            onDismiss = { scanImageUri = null }
+        )
     }
 }
 
