@@ -322,17 +322,21 @@ private fun HomeTabContent() {
         pendingVideoName = null
     }
 
+
     fun startVoiceInput() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your entry")
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+                android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+            ) {
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            }
         }
         if (intent.resolveActivity(context.packageManager) != null) {
             voiceLauncher.launch(intent)
         }
     }
-
     fun toggleAudioRecording() {
         if (isRecordingAudio) {
             val saved = audioRecorder.stopRecordingAndSave()
