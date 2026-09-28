@@ -151,8 +151,9 @@ private fun HomeTabContent() {
 
     var selectedCalendarDateTimeMillis by remember { mutableStateOf<Long?>(null) }
     var isScanningText by remember { mutableStateOf(false) }
+    var scanImageUri by remember { mutableStateOf<Uri?>(null) }
 
-    val scanImagePickerLauncher = rememberLauncherForActivityResult(
+    /*val scanImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
@@ -164,6 +165,13 @@ private fun HomeTabContent() {
                 }
                 isScanningText = false
             }
+        }
+    }*/
+    val scanImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scanImageUri = uri
         }
     }
 
@@ -1140,6 +1148,16 @@ private fun HomeTabContent() {
         val editingId = fullScreenEditingEntryId
         var loadedEntry by remember(editingId) { mutableStateOf<LogEntry?>(null) }
         var isLoaded by remember(editingId) { mutableStateOf(editingId == null) }
+        scanImageUri?.let { uri ->
+        ImageCropScanner(
+            imageUri = uri,
+            onExtractedText = { recognizedText ->
+                noteText = if (noteText.isBlank()) recognizedText else "$noteText\n$recognizedText"
+                scanImageUri = null
+            },
+            onDismiss = { scanImageUri = null }
+        )
+        }
 
         LaunchedEffect(editingId) {
             if (editingId != null) {
