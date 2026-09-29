@@ -186,6 +186,21 @@ class StreamingSpeechHelper(private val context: Context) {
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy — try again"
         else -> "Speech recognition error ($error)"
     }
+/**
+     * Stops the current session immediately and reports it as no longer
+     * listening — call this from a "tap to stop" button, since simply
+     * calling stopListening() doesn't always trigger onResults/onEndOfSpeech
+     * promptly on every device.
+     */
+    fun forceStop(onListeningStateChanged: (Boolean) -> Unit) {
+        recognizer?.apply {
+            try { cancel() } catch (e: Exception) { /* ignore */ }
+            try { destroy() } catch (e: Exception) { /* ignore */ }
+        }
+        recognizer = null
+        isListening = false
+        onListeningStateChanged(false)
+    }
 
     fun stop() {
         recognizer?.apply {
@@ -195,4 +210,12 @@ class StreamingSpeechHelper(private val context: Context) {
         recognizer = null
         isListening = false
     }
+   /* fun stop() {
+        recognizer?.apply {
+            try { stopListening() } catch (e: Exception) { /* ignore */ }
+            destroy()
+        }
+        recognizer = null
+        isListening = false
+    }*/
 }
