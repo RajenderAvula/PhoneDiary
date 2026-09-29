@@ -24,12 +24,12 @@ import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NotePrintHelper
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.SavedAttachment
+import com.example.phonediary.files.StreamingSpeechHelper
 import com.example.phonediary.files.VideoCaptureHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-/** What the caller gets back when Save is tapped. */
 data class FullScreenNoteResult(
     val title: String,
     val text: String,
@@ -61,6 +61,7 @@ fun FullScreenNoteEditor(
     val scope = rememberCoroutineScope()
     val dateTimeFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
     val audioRecorder = remember { AudioRecorderHelper(context) }
+    val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
 
     var title by remember { mutableStateOf(initialTitle) }
     var text by remember { mutableStateOf(initialText) }
@@ -77,6 +78,50 @@ fun FullScreenNoteEditor(
     var dueAtMillis by remember { mutableStateOf(initialDueAtMillis) }
     var repeatRule by remember { mutableStateOf(initialRepeatRule) }
     var showRepeatDialogFS by remember { mutableStateOf(false) }
+
+    // ---- Speech input: one-shot and streaming, same as main screen ----
+    var isOneShotListening by remember { mutableStateOf(false) }
+    var isStreamingListening by remember { mutableStateOf(false) }
+    var streamingPartialText by remember { mutableStateOf("") }
+    var speechError by remember { mutableStateOf<String?>(null) }
+
+    fun startOneShotSpeech() {
+        speechError = null
+        streamingSpeechHelper.startOneShot(
+            onResult = { finalText -> text = if (text.isBlank()) finalText else "$text $finalText" },
+            onError = { message -> speechError = message },
+            onListeningStateChanged = { listening -> isOneShotListening = listening }
+        )
+    }
+
+    fun toggleStreamingSpeech() {
+        if (isStreamingListening) {
+            streamingSpeechHelper.stop()
+            isStreamingListening = false
+            return
+        }
+        speechError = null
+        streamingPartialText = ""
+        streamingSpeechHelper.start(
+            onPartialResult = { partial -> streamingPartialText = partial },
+            onFinalResult = { finalText ->
+                text = if (text.isBlank()) finalText else "$text $finalText"
+                streamingPartialText = ""
+            },
+            onError = { message -> speechError = message; streamingPartialText = "" },
+            onListeningStateChanged = { listening -> isStreamingListening = listening }
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { streamingSpeechHelper.stop() }
+    }
+
+    // ---- OCR image scan, same as main screen ----
+    var scanImageUri by remember { mutableStateOf<Uri?>(null) }
+    val scanImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri -> if (uri != null) scanImageUri = uri }
 
     val locationPermissionLauncherFS = rememberLauncherForActivityResult(
         contract = RequestPermission()
@@ -175,9 +220,7 @@ fun FullScreenNoteEditor(
                             repeatRule = repeatRule,
                             attachmentNames = existingAttachmentNames + newAttachments.map { it.name }
                         )
-                    }) {
-                        Text("📤")
-                    }
+                    }) { Text("📤") }
                     TextButton(onClick = {
                         NotePrintHelper.printNote(
                             context = context,
@@ -190,9 +233,7 @@ fun FullScreenNoteEditor(
                             repeatRule = repeatRule,
                             attachmentNames = existingAttachmentNames + newAttachments.map { it.name }
                         )
-                    }) {
-                        Text("🖨")
-                    }
+                    }) { Text("🖨") }
                     TextButton(onClick = {
                         onSave(
                             FullScreenNoteResult(
@@ -207,9 +248,7 @@ fun FullScreenNoteEditor(
                                 repeatRule = repeatRule
                             )
                         )
-                    }) {
-                        Text("Save")
-                    }
+                    }) { Text("Save") }
                 }
             )
         }
@@ -238,19 +277,42 @@ fun FullScreenNoteEditor(
                 Spacer(Modifier.height(4.dp))
             }
 
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                placeholder = { Text("Write your note…") },
-                visualTransformation = if (!highlightQuery.isNullOrBlank()) {
-                    rememberThemedHighlight(highlightQuery)
-                } else {
-                    VisualTransformation.None
+            Row(verticalAlignment = Alignment.Top) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Write your note…") },
+                    minLines = 6,
+                    maxLines = 12,
+                    visualTransformation = if (!highlightQuery.isNullOrBlank()) {
+                        rememberThemedHighlight(highlightQuery)
+                    } else {
+                        VisualTransformation.None
+                    }
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { startOneShotSpeech() }) {
+                    Text(if (isOneShotListening) "🔴" else "🎤")
                 }
-            )
+                IconButton(onClick = { toggleStreamingSpeech() }) {
+                    Text(if (isStreamingListening) "🔴" else "🎙️")
+                }
+                IconButton(onClick = { scanImagePickerLauncher.launch("image/*") }) {
+                    Text("📷")
+                }
+            }
+            if (isStreamingListening || streamingPartialText.isNotBlank()) {
+                Text(
+                    if (streamingPartialText.isNotBlank()) "🎙️ $streamingPartialText" else "🎙️ Listening…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            speechError?.let {
+                Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
 
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -373,5 +435,16 @@ fun FullScreenNoteEditor(
                 OutlinedButton(onClick = { startVideoCapture() }) { Text("📹 Video") }
             }
         }
+    }
+
+    scanImageUri?.let { uri ->
+        ImageCropScanner(
+            imageUri = uri,
+            onExtractedText = { recognizedText ->
+                text = if (text.isBlank()) recognizedText else "$text\n$recognizedText"
+                scanImageUri = null
+            },
+            onDismiss = { scanImageUri = null }
+        )
     }
 }
