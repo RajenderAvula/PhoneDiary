@@ -209,8 +209,8 @@ private fun HomeTabContent() {
 
     fun toggleStreamingSpeech() {
         if (isStreamingListening) {
-            streamingSpeechHelper.forceStop()
-        
+            //streamingSpeechHelper.forceStop()
+        streamingSpeechHelper.forceStop { listening -> isStreamingListening = listening }
             return
         }
         streamingError = null
