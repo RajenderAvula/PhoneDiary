@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.VisualTransformation
@@ -85,7 +87,7 @@ fun FullScreenNoteEditor(
     var streamingPartialText by remember { mutableStateOf("") }
     var speechError by remember { mutableStateOf<String?>(null) }
 
-    fun startOneShotSpeech() {
+    /*fun startOneShotSpeech() {
         speechError = null
         streamingSpeechHelper.startOneShot(
             onResult = { finalText -> text = if (text.isBlank()) finalText else "$text $finalText" },
@@ -98,6 +100,24 @@ fun FullScreenNoteEditor(
         if (isStreamingListening) {
             streamingSpeechHelper.stop()
             isStreamingListening = false
+            return
+        }*/
+        fun startOneShotSpeech() {
+        if (isOneShotListening) {
+            streamingSpeechHelper.forceStop { listening -> isOneShotListening = listening }
+            return
+        }
+        speechError = null
+        streamingSpeechHelper.startOneShot(
+            onResult = { finalText -> text = if (text.isBlank()) finalText else "$text $finalText" },
+            onError = { message -> speechError = message },
+            onListeningStateChanged = { listening -> isOneShotListening = listening }
+        )
+    }
+
+    fun toggleStreamingSpeech() {
+        if (isStreamingListening) {
+            streamingSpeechHelper.forceStop { listening -> isStreamingListening = listening }
             return
         }
         speechError = null
@@ -258,6 +278,7 @@ fun FullScreenNoteEditor(
                 .padding(padding)
                 .padding(16.dp)
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
         ) {
             OutlinedTextField(
                 value = title,
