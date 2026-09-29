@@ -295,7 +295,7 @@ private fun HomeTabContent() {
         }
     }
 
-    val voiceLauncher = rememberLauncherForActivityResult(
+    /*val voiceLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -306,7 +306,7 @@ private fun HomeTabContent() {
                 noteText = if (noteText.isBlank()) spokenText else "$noteText $spokenText"
             }
         }
-    }
+    }*/
 
     val videoCaptureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -323,7 +323,7 @@ private fun HomeTabContent() {
     }
 
 
-    fun startVoiceInput() {
+    /*fun startVoiceInput() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your entry")
@@ -336,6 +336,19 @@ private fun HomeTabContent() {
         if (intent.resolveActivity(context.packageManager) != null) {
             voiceLauncher.launch(intent)
         }
+    }*/
+    var isOneShotListening by remember { mutableStateOf(false) }
+    var oneShotError by remember { mutableStateOf<String?>(null) }
+
+    fun startVoiceInput() {
+        oneShotError = null
+        streamingSpeechHelper.startOneShot(
+            onResult = { finalText ->
+                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
+            },
+            onError = { message -> oneShotError = message },
+            onListeningStateChanged = { listening -> isOneShotListening = listening }
+        )
     }
     fun toggleAudioRecording() {
         if (isRecordingAudio) {
@@ -644,7 +657,13 @@ private fun HomeTabContent() {
                 maxLines = 6
             )
             Spacer(Modifier.width(8.dp))
-            IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
+            /*IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
+            IconButton(onClick = { toggleStreamingSpeech() }) {
+                Text(if (isStreamingListening) "🔴" else "🎙️")
+            }*/
+            IconButton(onClick = { startVoiceInput() }) {
+                Text(if (isOneShotListening) "🔴" else "🎤")
+            }
             IconButton(onClick = { toggleStreamingSpeech() }) {
                 Text(if (isStreamingListening) "🔴" else "🎙️")
             }
@@ -667,7 +686,15 @@ private fun HomeTabContent() {
                 color = MaterialTheme.colorScheme.primary
             )
         }
+       /* streamingError?.let {
+            Spacer(Modifier.height(4.dp))
+            Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }*/
         streamingError?.let {
+            Spacer(Modifier.height(4.dp))
+            Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        oneShotError?.let {
             Spacer(Modifier.height(4.dp))
             Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
