@@ -209,8 +209,8 @@ private fun HomeTabContent() {
 
     fun toggleStreamingSpeech() {
         if (isStreamingListening) {
-            streamingSpeechHelper.stop()
-            isStreamingListening = false
+            streamingSpeechHelper.forceStop()
+        
             return
         }
         streamingError = null
@@ -337,10 +337,27 @@ private fun HomeTabContent() {
             voiceLauncher.launch(intent)
         }
     }*/
+   /* var isOneShotListening by remember { mutableStateOf(false) }
+    var oneShotError by remember { mutableStateOf<String?>(null) }
+
+    fun startVoiceInput() {
+        oneShotError = null
+        streamingSpeechHelper.startOneShot(
+            onResult = { finalText ->
+                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
+            },
+            onError = { message -> oneShotError = message },
+            onListeningStateChanged = { listening -> isOneShotListening = listening }
+        )
+    }*/
     var isOneShotListening by remember { mutableStateOf(false) }
     var oneShotError by remember { mutableStateOf<String?>(null) }
 
     fun startVoiceInput() {
+        if (isOneShotListening) {
+            streamingSpeechHelper.forceStop { listening -> isOneShotListening = listening }
+            return
+        }
         oneShotError = null
         streamingSpeechHelper.startOneShot(
             onResult = { finalText ->
