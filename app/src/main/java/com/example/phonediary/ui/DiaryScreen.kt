@@ -1183,7 +1183,7 @@ private fun HomeTabContent() {
             val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
             val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
 
-            FullScreenNoteEditor(
+           /* FullScreenNoteEditor(
                 initialTitle = initialTitle,
                 initialText = initialText,
                 initialLocationUrl = initialLocation,
@@ -1216,6 +1216,44 @@ private fun HomeTabContent() {
                                     reminderAtMillis = result.reminderAtMillis,
                                     dueAtMillis = result.dueAtMillis,
                                     repeatRule = result.repeatRule,
+                                    lastModifiedMillis = System.currentTimeMillis()
+                                )*/
+                                FullScreenNoteEditor(
+                initialTitle = initialTitle,
+                initialText = initialText,
+                initialLocationUrl = initialLocation,
+                initialTags = initialTags,
+                initialAttachmentNames = initialAttachments,
+                initialReminderAtMillis = initialReminder,
+                initialDueAtMillis = initialDue,
+                initialRepeatRule = initialRepeat,
+                initialNoteDateTimeMillis = if (editingId == null) selectedCalendarDateTimeMillis else loadedEntry?.timestampMillis,
+                highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
+                onSave = { result ->
+                    if (editingId == null) {
+                        noteTitle = result.title
+                        noteText = result.text
+                        locationText = result.locationUrl
+                        noteTags = result.tags
+                        pendingAttachments = pendingAttachments + result.newAttachments
+                        reminderAtMillis = result.reminderAtMillis
+                        dueAtMillis = result.dueAtMillis
+                        repeatConfig = RepeatConfig.fromStored(result.repeatRule)
+                        selectedCalendarDateTimeMillis = result.noteDateTimeMillis
+                    } else {
+                        scope.launch {
+                            loadedEntry?.let { entry ->
+                                val finalAttachments = result.existingAttachmentNames + result.newAttachments.map { it.name }
+                                val updated = entry.copy(
+                                    title = result.title.ifBlank { null },
+                                    note = result.text.ifBlank { null },
+                                    locationUrl = result.locationUrl.ifBlank { null },
+                                    tags = TagListUtil.toStored(result.tags),
+                                    attachmentFileName = AttachmentListUtil.toStored(finalAttachments),
+                                    reminderAtMillis = result.reminderAtMillis,
+                                    dueAtMillis = result.dueAtMillis,
+                                    repeatRule = result.repeatRule,
+                                    timestampMillis = result.noteDateTimeMillis ?: entry.timestampMillis,
                                     lastModifiedMillis = System.currentTimeMillis()
                                 )
                                 AppDatabase.getInstance(context).logEntryDao().update(updated)
