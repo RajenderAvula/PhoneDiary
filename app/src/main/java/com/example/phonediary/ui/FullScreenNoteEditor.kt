@@ -77,7 +77,7 @@ fun FullScreenNoteEditor(
     var isRecordingAudio by remember { mutableStateOf(false) }
     var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
-
+var showExpandedTextEditor by remember { mutableStateOf(false) }
     var reminderAtMillis by remember { mutableStateOf(initialReminderAtMillis) }
     var dueAtMillis by remember { mutableStateOf(initialDueAtMillis) }
     var repeatRule by remember { mutableStateOf(initialRepeatRule) }
@@ -322,7 +322,7 @@ fun FullScreenNoteEditor(
                     VisualTransformation.None
                 }
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
+           Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { startOneShotSpeech() }) {
                     Text(if (isOneShotListening) "🔴" else "🎤")
                 }
@@ -331,6 +331,11 @@ fun FullScreenNoteEditor(
                 }
                 IconButton(onClick = { scanImagePickerLauncher.launch("image/*") }) {
                     Text("📷")
+                }
+    
+            
+                IconButton(onClick = { showExpandedTextEditor = true }) {
+                    Text("✎")
                 }
             }
             if (isStreamingListening || streamingPartialText.isNotBlank()) {
@@ -475,6 +480,17 @@ fun FullScreenNoteEditor(
                 scanImageUri = null
             },
             onDismiss = { scanImageUri = null }
+        )
+    }
+    if (showExpandedTextEditor) {
+        ExpandedTextEditor(
+            initialText = text,
+            onDone = { newText, newAttachmentsFromEditor ->
+                text = newText
+                newAttachments = newAttachments + newAttachmentsFromEditor
+                showExpandedTextEditor = false
+            },
+            onCancel = { showExpandedTextEditor = false }
         )
     }
 }
