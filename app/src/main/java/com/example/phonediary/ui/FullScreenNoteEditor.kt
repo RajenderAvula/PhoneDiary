@@ -9,11 +9,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.VisualTransformation
@@ -41,7 +41,8 @@ data class FullScreenNoteResult(
     val newAttachments: List<SavedAttachment>,
     val reminderAtMillis: Long?,
     val dueAtMillis: Long?,
-    val repeatRule: String
+    val repeatRule: String,
+    val noteDateTimeMillis: Long?
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,13 +56,14 @@ fun FullScreenNoteEditor(
     initialReminderAtMillis: Long?,
     initialDueAtMillis: Long?,
     initialRepeatRule: String,
+    initialNoteDateTimeMillis: Long?,
     highlightQuery: String? = null,
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val dateTimeFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
+    val dateTimeFormat = remember { SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault()) }
     val audioRecorder = remember { AudioRecorderHelper(context) }
     val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
 
@@ -81,28 +83,16 @@ fun FullScreenNoteEditor(
     var repeatRule by remember { mutableStateOf(initialRepeatRule) }
     var showRepeatDialogFS by remember { mutableStateOf(false) }
 
-    // ---- Speech input: one-shot and streaming, same as main screen ----
+    // The note's own date/time — matches what the main screen sets via
+    // tapping a calendar day. Shown and editable here too.
+    var noteDateTimeMillis by remember { mutableStateOf(initialNoteDateTimeMillis) }
+
     var isOneShotListening by remember { mutableStateOf(false) }
     var isStreamingListening by remember { mutableStateOf(false) }
     var streamingPartialText by remember { mutableStateOf("") }
     var speechError by remember { mutableStateOf<String?>(null) }
 
-    /*fun startOneShotSpeech() {
-        speechError = null
-        streamingSpeechHelper.startOneShot(
-            onResult = { finalText -> text = if (text.isBlank()) finalText else "$text $finalText" },
-            onError = { message -> speechError = message },
-            onListeningStateChanged = { listening -> isOneShotListening = listening }
-        )
-    }
-
-    fun toggleStreamingSpeech() {
-        if (isStreamingListening) {
-            streamingSpeechHelper.stop()
-            isStreamingListening = false
-            return
-        }*/
-        fun startOneShotSpeech() {
+    fun startOneShotSpeech() {
         if (isOneShotListening) {
             streamingSpeechHelper.forceStop { listening -> isOneShotListening = listening }
             return
@@ -137,7 +127,6 @@ fun FullScreenNoteEditor(
         onDispose { streamingSpeechHelper.stop() }
     }
 
-    // ---- OCR image scan, same as main screen ----
     var scanImageUri by remember { mutableStateOf<Uri?>(null) }
     val scanImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -232,7 +221,7 @@ fun FullScreenNoteEditor(
                             context = context,
                             title = title.ifBlank { null },
                             note = text.ifBlank { null },
-                            timestampMillis = System.currentTimeMillis(),
+                            timestampMillis = noteDateTimeMillis ?: System.currentTimeMillis(),
                             locationUrl = locationUrl.ifBlank { null },
                             tags = tags,
                             reminderAtMillis = reminderAtMillis,
@@ -265,7 +254,8 @@ fun FullScreenNoteEditor(
                                 newAttachments = newAttachments,
                                 reminderAtMillis = reminderAtMillis,
                                 dueAtMillis = dueAtMillis,
-                                repeatRule = repeatRule
+                                repeatRule = repeatRule,
+                                noteDateTimeMillis = noteDateTimeMillis
                             )
                         )
                     }) { Text("Save") }
@@ -287,8 +277,29 @@ fun FullScreenNoteEditor(
                 placeholder = { Text("Note title (optional) — shown in Calendar & searchable") },
                 singleLine = true
             )
-            Spacer(Modifier.height(8.dp))
 
+            // ---- Note date & time — matches main screen's calendar-day picker ----
+            Spacer(Modifier.height(8.dp))
+            Text("Note date & time", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        DateTimePickerUtil.pick(context) { picked -> noteDateTimeMillis = picked }
+                    }
+                ) {
+                    Text(
+                        noteDateTimeMillis?.let { dateTimeFormat.format(it) }
+                            ?: "Set date & time (defaults to now)"
+                    )
+                }
+                if (noteDateTimeMillis != null) {
+                    Spacer(Modifier.width(6.dp))
+                    OutlinedButton(onClick = { noteDateTimeMillis = null }) { Text("✕") }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
             if (!highlightQuery.isNullOrBlank()) {
                 Text(
                     "Showing match for \"$highlightQuery\"",
@@ -298,21 +309,19 @@ fun FullScreenNoteEditor(
                 Spacer(Modifier.height(4.dp))
             }
 
-            Row(verticalAlignment = Alignment.Top) {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Write your note…") },
-                    minLines = 6,
-                    maxLines = 12,
-                    visualTransformation = if (!highlightQuery.isNullOrBlank()) {
-                        rememberThemedHighlight(highlightQuery)
-                    } else {
-                        VisualTransformation.None
-                    }
-                )
-            }
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Write your note…") },
+                minLines = 6,
+                maxLines = 12,
+                visualTransformation = if (!highlightQuery.isNullOrBlank()) {
+                    rememberThemedHighlight(highlightQuery)
+                } else {
+                    VisualTransformation.None
+                }
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { startOneShotSpeech() }) {
                     Text(if (isOneShotListening) "🔴" else "🎤")
