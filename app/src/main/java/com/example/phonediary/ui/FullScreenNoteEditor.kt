@@ -16,7 +16,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
@@ -27,6 +28,7 @@ import com.example.phonediary.files.NotePrintHelper
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
+import com.example.phonediary.files.TextScanHelper
 import com.example.phonediary.files.VideoCaptureHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -68,7 +70,12 @@ fun FullScreenNoteEditor(
     val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
 
     var title by remember { mutableStateOf(initialTitle) }
-    var text by remember { mutableStateOf(initialText) }
+
+    // Text is now a TextFieldValue so we can insert markers at the exact cursor position.
+    var textFieldValue by remember {
+        mutableStateOf(TextFieldValue(initialText, selection = TextRange(initialText.length)))
+    }
+
     var locationUrl by remember { mutableStateOf(initialLocationUrl) }
     var tagInput by remember { mutableStateOf("") }
     var tags by remember { mutableStateOf(initialTags) }
@@ -77,20 +84,45 @@ fun FullScreenNoteEditor(
     var isRecordingAudio by remember { mutableStateOf(false) }
     var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
-var showExpandedTextEditor by remember { mutableStateOf(false) }
+
     var reminderAtMillis by remember { mutableStateOf(initialReminderAtMillis) }
     var dueAtMillis by remember { mutableStateOf(initialDueAtMillis) }
     var repeatRule by remember { mutableStateOf(initialRepeatRule) }
     var showRepeatDialogFS by remember { mutableStateOf(false) }
 
-    // The note's own date/time — matches what the main screen sets via
-    // tapping a calendar day. Shown and editable here too.
     var noteDateTimeMillis by remember { mutableStateOf(initialNoteDateTimeMillis) }
 
     var isOneShotListening by remember { mutableStateOf(false) }
     var isStreamingListening by remember { mutableStateOf(false) }
     var streamingPartialText by remember { mutableStateOf("") }
     var speechError by remember { mutableStateOf<String?>(null) }
+
+    var showScribblePad by remember { mutableStateOf(false) }
+    var isScanningText by remember { mutableStateOf(false) }
+
+    fun insertAtCursor(marker: String) {
+        val cursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
+        val newText = textFieldValue.text.substring(0, cursor) + marker + textFieldValue.text.substring(cursor)
+        textFieldValue = TextFieldValue(newText, selection = TextRange(cursor + marker.length))
+    }
+
+    fun openMarkerAttachment(name: String) {
+        scope.launch {
+            val uri = MediaResolveUtil.resolve(context, name)
+            if (uri != null) {
+                try {
+                    val mime = context.contentResolver.getType(uri) ?: "*/*"
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, mime)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    // No app can open it — ignore rather than crash.
+                }
+            }
+        }
+    }
 
     fun startOneShotSpeech() {
         if (isOneShotListening) {
@@ -99,7 +131,7 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
         }
         speechError = null
         streamingSpeechHelper.startOneShot(
-            onResult = { finalText -> text = if (text.isBlank()) finalText else "$text $finalText" },
+            onResult = { finalText -> insertAtCursor(finalText) },
             onError = { message -> speechError = message },
             onListeningStateChanged = { listening -> isOneShotListening = listening }
         )
@@ -115,7 +147,7 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
         streamingSpeechHelper.start(
             onPartialResult = { partial -> streamingPartialText = partial },
             onFinalResult = { finalText ->
-                text = if (text.isBlank()) finalText else "$text $finalText"
+                insertAtCursor(finalText)
                 streamingPartialText = ""
             },
             onError = { message -> speechError = message; streamingPartialText = "" },
@@ -127,10 +159,46 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
         onDispose { streamingSpeechHelper.stop() }
     }
 
-    var scanImageUri by remember { mutableStateOf<Uri?>(null) }
     val scanImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri -> if (uri != null) scanImageUri = uri }
+    ) { uri ->
+        if (uri != null) {
+            isScanningText = true
+            scope.launch {
+                val recognizedText = TextScanHelper.recognizeTextFromImage(context, uri)
+                if (recognizedText != null) insertAtCursor(recognizedText)
+                isScanningText = false
+            }
+        }
+    }
+
+    val insertImageLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val saved = FileAttachmentHelper.copyToDownloads(context, uri)
+                if (saved != null) {
+                    newAttachments = newAttachments + saved
+                    insertAtCursor("📎[image: ${saved.name}]")
+                }
+            }
+        }
+    }
+
+    val attachFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val saved = FileAttachmentHelper.copyToDownloads(context, uri)
+                if (saved != null) {
+                    newAttachments = newAttachments + saved
+                    insertAtCursor("🔗[file: ${saved.name}]")
+                }
+            }
+        }
+    }
 
     val locationPermissionLauncherFS = rememberLauncherForActivityResult(
         contract = RequestPermission()
@@ -220,7 +288,7 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
                         NoteShareHelper.shareFields(
                             context = context,
                             title = title.ifBlank { null },
-                            note = text.ifBlank { null },
+                            note = textFieldValue.text.ifBlank { null },
                             timestampMillis = noteDateTimeMillis ?: System.currentTimeMillis(),
                             locationUrl = locationUrl.ifBlank { null },
                             tags = tags,
@@ -234,7 +302,7 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
                         NotePrintHelper.printNote(
                             context = context,
                             title = title.ifBlank { "Phone Diary Note" },
-                            noteText = text,
+                            noteText = textFieldValue.text,
                             tags = tags,
                             locationUrl = locationUrl.ifBlank { null },
                             reminderAtMillis = reminderAtMillis,
@@ -247,7 +315,7 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
                         onSave(
                             FullScreenNoteResult(
                                 title = title,
-                                text = text,
+                                text = textFieldValue.text,
                                 locationUrl = locationUrl,
                                 tags = tags,
                                 existingAttachmentNames = existingAttachmentNames,
@@ -278,20 +346,14 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
                 singleLine = true
             )
 
-            // ---- Note date & time — matches main screen's calendar-day picker ----
             Spacer(Modifier.height(8.dp))
             Text("Note date & time", style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
-                    onClick = {
-                        DateTimePickerUtil.pick(context) { picked -> noteDateTimeMillis = picked }
-                    }
+                    onClick = { DateTimePickerUtil.pick(context) { picked -> noteDateTimeMillis = picked } }
                 ) {
-                    Text(
-                        noteDateTimeMillis?.let { dateTimeFormat.format(it) }
-                            ?: "Set date & time (defaults to now)"
-                    )
+                    Text(noteDateTimeMillis?.let { dateTimeFormat.format(it) } ?: "Set date & time (defaults to now)")
                 }
                 if (noteDateTimeMillis != null) {
                     Spacer(Modifier.width(6.dp))
@@ -309,35 +371,46 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
                 Spacer(Modifier.height(4.dp))
             }
 
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
+            // ---- The note box itself: clickable markers + scribble docks right here ----
+            MarkerTextField(
+                value = textFieldValue,
+                onValueChange = { textFieldValue = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Write your note…") },
+                placeholderText = "Write your note…",
                 minLines = 6,
-                maxLines = 12,
-                visualTransformation = if (!highlightQuery.isNullOrBlank()) {
-                    rememberThemedHighlight(highlightQuery)
-                } else {
-                    VisualTransformation.None
-                }
+                maxLines = 14,
+                onMarkerClick = { _, name -> openMarkerAttachment(name) }
             )
-           Row(verticalAlignment = Alignment.CenterVertically) {
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { startOneShotSpeech() }) {
                     Text(if (isOneShotListening) "🔴" else "🎤")
                 }
                 IconButton(onClick = { toggleStreamingSpeech() }) {
                     Text(if (isStreamingListening) "🔴" else "🎙️")
                 }
-                IconButton(onClick = { scanImagePickerLauncher.launch("image/*") }) {
-                    Text("📷")
+                IconButton(enabled = !isScanningText, onClick = { scanImagePickerLauncher.launch("image/*") }) {
+                    Text(if (isScanningText) "⏳" else "📷")
                 }
-    
-            
-                IconButton(onClick = { showExpandedTextEditor = true }) {
-                    Text("✎")
-                }
+                IconButton(onClick = { insertImageLauncher.launch("image/*") }) { Text("🖼") }
+                IconButton(onClick = { attachFileLauncher.launch(arrayOf("*/*")) }) { Text("🔗") }
+                IconButton(onClick = { showScribblePad = !showScribblePad }) { Text("✍") }
             }
+
+            if (showScribblePad) {
+                InlineScribblePad(
+                    onInsert = { bitmap ->
+                        val saved = FileAttachmentHelper.saveBitmapAsAttachment(context, bitmap)
+                        if (saved != null) {
+                            newAttachments = newAttachments + saved
+                            insertAtCursor("✍[drawing: ${saved.name}]")
+                        }
+                        showScribblePad = false
+                    },
+                    onCancel = { showScribblePad = false }
+                )
+            }
+
             if (isStreamingListening || streamingPartialText.isNotBlank()) {
                 Text(
                     if (streamingPartialText.isNotBlank()) "🎙️ $streamingPartialText" else "🎙️ Listening…",
@@ -470,27 +543,5 @@ var showExpandedTextEditor by remember { mutableStateOf(false) }
                 OutlinedButton(onClick = { startVideoCapture() }) { Text("📹 Video") }
             }
         }
-    }
-
-    scanImageUri?.let { uri ->
-        ImageCropScanner(
-            imageUri = uri,
-            onExtractedText = { recognizedText ->
-                text = if (text.isBlank()) recognizedText else "$text\n$recognizedText"
-                scanImageUri = null
-            },
-            onDismiss = { scanImageUri = null }
-        )
-    }
-    if (showExpandedTextEditor) {
-        ExpandedTextEditor(
-            initialText = text,
-            onDone = { newText, newAttachmentsFromEditor ->
-                text = newText
-                newAttachments = newAttachments + newAttachmentsFromEditor
-                showExpandedTextEditor = false
-            },
-            onCancel = { showExpandedTextEditor = false }
-        )
     }
 }
