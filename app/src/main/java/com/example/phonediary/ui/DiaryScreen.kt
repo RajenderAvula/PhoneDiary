@@ -1,7 +1,6 @@
 package com.example.phonediary.ui
 
 import android.Manifest
-import android.app.Activity
 import android.app.AlarmManager
 import android.app.TimePickerDialog
 import android.content.ContentUris
@@ -10,9 +9,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.CalendarContract
-import android.provider.MediaStore
 import android.provider.Settings
-import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
@@ -41,7 +38,6 @@ import com.example.phonediary.files.EmailBackupHelper
 import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.files.LocationOpenHelper
 import com.example.phonediary.files.LocationPinHelper
-import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
@@ -93,14 +89,12 @@ fun DiaryScreen(
                 )
             }
         }
-    
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             // Both tabs stay composed at all times — only visibility/size toggles.
-            // This is deliberate: a conditional `when` here would fully dispose
-            // whichever tab isn't selected, wiping its remember state (including
-            // any note being drafted or the full-screen editor) every time the
-            // user switches away and back.
+            // A conditional `when` here would fully dispose whichever tab isn't
+            // selected, wiping its remember state (including an in-progress note
+            // or the full-screen editor) every time the user switches away and back.
             Box(
                 modifier = if (selectedTab == DiaryTab.HOME) Modifier.fillMaxSize() else Modifier.size(0.dp)
             ) {
@@ -133,7 +127,6 @@ fun DiaryScreen(
             }
         }
     }
-    
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -202,28 +195,38 @@ private fun HomeTabContent() {
     var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
     var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
 
-    // ---- OCR image scan ----
-    var isScanningText by remember { mutableStateOf(false) }
+    // ---- OCR image scan (crop/border adjustment) ----
     var scanImageUri by remember { mutableStateOf<Uri?>(null) }
-
     val scanImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            scanImageUri = uri
-        }
-    }
+    ) { uri -> if (uri != null) scanImageUri = uri }
 
-    // ---- Streaming (live partial) speech ----
+    // ---- Speech: one-shot (toggleable) and streaming (live partial) ----
     val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
+    var isOneShotListening by remember { mutableStateOf(false) }
+    var oneShotError by remember { mutableStateOf<String?>(null) }
     var isStreamingListening by remember { mutableStateOf(false) }
     var streamingPartialText by remember { mutableStateOf("") }
     var streamingError by remember { mutableStateOf<String?>(null) }
 
+    fun startVoiceInput() {
+        if (isOneShotListening) {
+            streamingSpeechHelper.forceStop { listening -> isOneShotListening = listening }
+            return
+        }
+        oneShotError = null
+        streamingSpeechHelper.startOneShot(
+            onResult = { finalText ->
+                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
+            },
+            onError = { message -> oneShotError = message },
+            onListeningStateChanged = { listening -> isOneShotListening = listening }
+        )
+    }
+
     fun toggleStreamingSpeech() {
         if (isStreamingListening) {
-            //streamingSpeechHelper.forceStop()
-        streamingSpeechHelper.forceStop { listening -> isStreamingListening = listening }
+            streamingSpeechHelper.forceStop { listening -> isStreamingListening = listening }
             return
         }
         streamingError = null
@@ -300,20 +303,19 @@ private fun HomeTabContent() {
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        if (uris.isNotEmpty()) {
+        val distinctUris = uris.distinct()
+        if (distinctUris.isNotEmpty()) {
             scope.launch {
-                val saved = uris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
+                val saved = distinctUris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
                 pendingAttachments = pendingAttachments + saved
             }
         }
     }
 
-    
-
     val videoCaptureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
             val uri = pendingVideoUri
             val name = pendingVideoName
             if (uri != null && name != null) {
@@ -324,26 +326,6 @@ private fun HomeTabContent() {
         pendingVideoName = null
     }
 
-
-    
-    
-    var isOneShotListening by remember { mutableStateOf(false) }
-    var oneShotError by remember { mutableStateOf<String?>(null) }
-
-    fun startVoiceInput() {
-        if (isOneShotListening) {
-            streamingSpeechHelper.forceStop { listening -> isOneShotListening = listening }
-            return
-        }
-        oneShotError = null
-        streamingSpeechHelper.startOneShot(
-            onResult = { finalText ->
-                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
-            },
-            onError = { message -> oneShotError = message },
-            onListeningStateChanged = { listening -> isOneShotListening = listening }
-        )
-    }
     fun toggleAudioRecording() {
         if (isRecordingAudio) {
             val saved = audioRecorder.stopRecordingAndSave()
@@ -364,8 +346,8 @@ private fun HomeTabContent() {
         val (uri, name) = result
         pendingVideoUri = uri
         pendingVideoName = name
-        val intent = Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply {
-            putExtra(MediaStore.EXTRA_OUTPUT, uri)
+        val intent = Intent(android.provider.MediaStore.ACTION_VIDEO_CAPTURE).apply {
+            putExtra(android.provider.MediaStore.EXTRA_OUTPUT, uri)
         }
         if (intent.resolveActivity(context.packageManager) != null) {
             videoCaptureLauncher.launch(intent)
@@ -651,20 +633,13 @@ private fun HomeTabContent() {
                 maxLines = 6
             )
             Spacer(Modifier.width(8.dp))
-            /*IconButton(onClick = { startVoiceInput() }) { Text("🎤") }
-            IconButton(onClick = { toggleStreamingSpeech() }) {
-                Text(if (isStreamingListening) "🔴" else "🎙️")
-            }*/
             IconButton(onClick = { startVoiceInput() }) {
                 Text(if (isOneShotListening) "🔴" else "🎤")
             }
             IconButton(onClick = { toggleStreamingSpeech() }) {
                 Text(if (isStreamingListening) "🔴" else "🎙️")
             }
-            IconButton(
-                enabled = !isScanningText,
-                onClick = { scanImagePickerLauncher.launch("image/*") }
-            ) { Text(if (isScanningText) "⏳" else "📷") }
+            IconButton(onClick = { scanImagePickerLauncher.launch("image/*") }) { Text("📷") }
             IconButton(onClick = {
                 fullScreenEditingEntryId = null
                 fullScreenHighlightQuery = null
@@ -680,10 +655,6 @@ private fun HomeTabContent() {
                 color = MaterialTheme.colorScheme.primary
             )
         }
-       /* streamingError?.let {
-            Spacer(Modifier.height(4.dp))
-            Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        }*/
         streamingError?.let {
             Spacer(Modifier.height(4.dp))
             Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -992,11 +963,8 @@ private fun HomeTabContent() {
                                 Text("None", style = MaterialTheme.typography.bodySmall)
                             } else {
                                 editingAttachments.forEach { name ->
-                                    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
-                                    LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
-                                    AttachmentPreview(
+                                    ResolvingAttachmentPreview(
                                         name = name,
-                                        uri = resolvedUri,
                                         onRemove = { editingAttachments = editingAttachments.filterNot { it == name } }
                                     )
                                 }
@@ -1089,9 +1057,7 @@ private fun HomeTabContent() {
                                     Text("🔁 ${repeatDisplayLabel2(it)}", style = MaterialTheme.typography.bodySmall)
                                 }
                                 AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
-                                    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
-                                    LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
-                                    AttachmentPreview(name = name, uri = resolvedUri)
+                                    ResolvingAttachmentPreview(name = name)
                                 }
                             }
                         }
@@ -1159,10 +1125,9 @@ private fun HomeTabContent() {
             val initialReminder = if (editingId == null) reminderAtMillis else loadedEntry?.reminderAtMillis
             val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
             val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
+            val initialNoteDateTime = if (editingId == null) selectedCalendarDateTimeMillis else loadedEntry?.timestampMillis
 
-           
-           
-                                FullScreenNoteEditor(
+            FullScreenNoteEditor(
                 initialTitle = initialTitle,
                 initialText = initialText,
                 initialLocationUrl = initialLocation,
@@ -1171,15 +1136,12 @@ private fun HomeTabContent() {
                 initialReminderAtMillis = initialReminder,
                 initialDueAtMillis = initialDue,
                 initialRepeatRule = initialRepeat,
-                initialNoteDateTimeMillis = if (editingId == null) selectedCalendarDateTimeMillis else loadedEntry?.timestampMillis,
+                initialNoteDateTimeMillis = initialNoteDateTime,
                 highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
-               
-                        onSave = { result ->
+                onSave = { result ->
                     if (editingId == null) {
-                        // Save immediately, the same way the main "Save entry"
-                        // button does — full-screen Save and the main button
-                        // must behave identically, not leave a half-saved draft
-                        // sitting in the main form.
+                        // Save immediately — same behavior as the main "Save entry"
+                        // button, so a new note is never left half-saved.
                         if (result.title.isNotBlank() || result.text.isNotBlank() || result.locationUrl.isNotBlank() ||
                             result.newAttachments.isNotEmpty() || pendingAttachments.isNotEmpty()
                         ) {
