@@ -33,6 +33,8 @@ import com.example.phonediary.files.VideoCaptureHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 data class FullScreenNoteResult(
     val title: String,
@@ -75,7 +77,7 @@ fun FullScreenNoteEditor(
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(initialText, selection = TextRange(initialText.length)))
     }
-
+var isViewMode by remember { mutableStateOf(false) }
     var locationUrl by remember { mutableStateOf(initialLocationUrl) }
     var tagInput by remember { mutableStateOf("") }
     var tags by remember { mutableStateOf(initialTags) }
@@ -372,29 +374,61 @@ fun FullScreenNoteEditor(
             }
 
             // ---- The note box itself: clickable markers + scribble docks right here ----
-            MarkerTextField(
-                value = textFieldValue,
-                onValueChange = { textFieldValue = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholderText = "Write your note…",
-                minLines = 6,
-                maxLines = 14,
-                onMarkerClick = { _, name -> openMarkerAttachment(name) }
-            )
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { startOneShotSpeech() }) {
-                    Text(if (isOneShotListening) "🔴" else "🎤")
+
+            // ---- View / Edit toggle for the note box ----
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Note", style = MaterialTheme.typography.bodySmall)
+                Row {
+                    FilterChip(selected = !isViewMode, onClick = { isViewMode = false }, label = { Text("Edit") })
+                    Spacer(Modifier.width(6.dp))
+                    FilterChip(selected = isViewMode, onClick = { isViewMode = true }, label = { Text("View") })
                 }
-                IconButton(onClick = { toggleStreamingSpeech() }) {
-                    Text(if (isStreamingListening) "🔴" else "🎙️")
+            }
+            Spacer(Modifier.height(4.dp))
+
+            if (isViewMode) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp))
+                        .padding(12.dp)
+                ) {
+                    NoteViewRenderer(
+                        text = textFieldValue.text,
+                        modifier = Modifier.fillMaxWidth(),
+                        onMarkerClick = { _, name -> openMarkerAttachment(name) }
+                    )
                 }
-                IconButton(enabled = !isScanningText, onClick = { scanImagePickerLauncher.launch("image/*") }) {
-                    Text(if (isScanningText) "⏳" else "📷")
+            } else {
+                MarkerTextField(
+                    value = textFieldValue,
+                    onValueChange = { textFieldValue = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholderText = "Write your note…",
+                    minLines = 6,
+                    maxLines = 14,
+                    onMarkerClick = { _, name -> openMarkerAttachment(name) }
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { startOneShotSpeech() }) {
+                        Text(if (isOneShotListening) "🔴" else "🎤")
+                    }
+                    IconButton(onClick = { toggleStreamingSpeech() }) {
+                        Text(if (isStreamingListening) "🔴" else "🎙️")
+                    }
+                    IconButton(enabled = !isScanningText, onClick = { scanImagePickerLauncher.launch("image/*") }) {
+                        Text(if (isScanningText) "⏳" else "📷")
+                    }
+                    IconButton(onClick = { insertImageLauncher.launch("image/*") }) { Text("🖼") }
+                    IconButton(onClick = { attachFileLauncher.launch(arrayOf("*/*")) }) { Text("🔗") }
+                    IconButton(onClick = { showScribblePad = !showScribblePad }) { Text("✍") }
                 }
-                IconButton(onClick = { insertImageLauncher.launch("image/*") }) { Text("🖼") }
-                IconButton(onClick = { attachFileLauncher.launch(arrayOf("*/*")) }) { Text("🔗") }
-                IconButton(onClick = { showScribblePad = !showScribblePad }) { Text("✍") }
             }
 
             if (showScribblePad) {
@@ -511,7 +545,7 @@ fun FullScreenNoteEditor(
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
+           /* Spacer(Modifier.height(12.dp))
             Text("Attachments", style = MaterialTheme.typography.titleSmall)
             if (existingAttachmentNames.isNotEmpty()) {
                 existingAttachmentNames.forEach { name ->
@@ -532,6 +566,37 @@ fun FullScreenNoteEditor(
                         onRemove = { newAttachments = newAttachments.filterNot { it.name == attachment.name } }
                     )
                 }
+            }*/
+
+            Spacer(Modifier.height(12.dp))
+            Text("Attachments", style = MaterialTheme.typography.titleSmall)
+            val markerNames = remember(textFieldValue.text) {
+                markerRegex.findAll(textFieldValue.text).map { it.groupValues[2] }.toSet()
+            }
+            if (existingAttachmentNames.isEmpty() && newAttachments.isEmpty()) {
+                Text("None yet", style = MaterialTheme.typography.bodySmall)
+            }
+            existingAttachmentNames.forEach { name ->
+                var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
+                LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
+                if (name in markerNames) {
+                    Text("↳ referenced in note text", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+                AttachmentPreview(
+                    name = name,
+                    uri = resolvedUri,
+                    onRemove = { existingAttachmentNames = existingAttachmentNames.filterNot { it == name } }
+                )
+            }
+            newAttachments.forEach { attachment ->
+                if (attachment.name in markerNames) {
+                    Text("↳ referenced in note text", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+                AttachmentPreview(
+                    name = attachment.name,
+                    uri = attachment.uri,
+                    onRemove = { newAttachments = newAttachments.filterNot { it.name == attachment.name } }
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) { Text("Attach files") }
