@@ -93,11 +93,23 @@ fun DiaryScreen(
                 )
             }
         }
+    
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            when (selectedTab) {
-                DiaryTab.HOME -> HomeTabContent()
-                DiaryTab.SETTINGS -> Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+            // Both tabs stay composed at all times — only visibility/size toggles.
+            // This is deliberate: a conditional `when` here would fully dispose
+            // whichever tab isn't selected, wiping its remember state (including
+            // any note being drafted or the full-screen editor) every time the
+            // user switches away and back.
+            Box(
+                modifier = if (selectedTab == DiaryTab.HOME) Modifier.fillMaxSize() else Modifier.size(0.dp)
+            ) {
+                HomeTabContent()
+            }
+            Box(
+                modifier = if (selectedTab == DiaryTab.SETTINGS) Modifier.fillMaxSize() else Modifier.size(0.dp)
+            ) {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
                     SettingsPanel(
                         context = context,
                         blockedApps = blockedApps,
@@ -121,6 +133,7 @@ fun DiaryScreen(
             }
         }
     }
+    
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -295,18 +308,7 @@ private fun HomeTabContent() {
         }
     }
 
-    /*val voiceLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val spokenText = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull()
-            if (!spokenText.isNullOrBlank()) {
-                noteText = if (noteText.isBlank()) spokenText else "$noteText $spokenText"
-            }
-        }
-    }*/
+    
 
     val videoCaptureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -323,33 +325,8 @@ private fun HomeTabContent() {
     }
 
 
-    /*fun startVoiceInput() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your entry")
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
-                android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-            ) {
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            }
-        }
-        if (intent.resolveActivity(context.packageManager) != null) {
-            voiceLauncher.launch(intent)
-        }
-    }*/
-   /* var isOneShotListening by remember { mutableStateOf(false) }
-    var oneShotError by remember { mutableStateOf<String?>(null) }
-
-    fun startVoiceInput() {
-        oneShotError = null
-        streamingSpeechHelper.startOneShot(
-            onResult = { finalText ->
-                noteText = if (noteText.isBlank()) finalText else "$noteText $finalText"
-            },
-            onError = { message -> oneShotError = message },
-            onListeningStateChanged = { listening -> isOneShotListening = listening }
-        )
-    }*/
+    
+    
     var isOneShotListening by remember { mutableStateOf(false) }
     var oneShotError by remember { mutableStateOf<String?>(null) }
 
@@ -1183,41 +1160,8 @@ private fun HomeTabContent() {
             val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
             val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
 
-           /* FullScreenNoteEditor(
-                initialTitle = initialTitle,
-                initialText = initialText,
-                initialLocationUrl = initialLocation,
-                initialTags = initialTags,
-                initialAttachmentNames = initialAttachments,
-                initialReminderAtMillis = initialReminder,
-                initialDueAtMillis = initialDue,
-                initialRepeatRule = initialRepeat,
-                highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
-                onSave = { result ->
-                    if (editingId == null) {
-                        noteTitle = result.title
-                        noteText = result.text
-                        locationText = result.locationUrl
-                        noteTags = result.tags
-                        pendingAttachments = pendingAttachments + result.newAttachments
-                        reminderAtMillis = result.reminderAtMillis
-                        dueAtMillis = result.dueAtMillis
-                        repeatConfig = RepeatConfig.fromStored(result.repeatRule)
-                    } else {
-                        scope.launch {
-                            loadedEntry?.let { entry ->
-                                val finalAttachments = result.existingAttachmentNames + result.newAttachments.map { it.name }
-                                val updated = entry.copy(
-                                    title = result.title.ifBlank { null },
-                                    note = result.text.ifBlank { null },
-                                    locationUrl = result.locationUrl.ifBlank { null },
-                                    tags = TagListUtil.toStored(result.tags),
-                                    attachmentFileName = AttachmentListUtil.toStored(finalAttachments),
-                                    reminderAtMillis = result.reminderAtMillis,
-                                    dueAtMillis = result.dueAtMillis,
-                                    repeatRule = result.repeatRule,
-                                    lastModifiedMillis = System.currentTimeMillis()
-                                )*/
+           
+           
                                 FullScreenNoteEditor(
                 initialTitle = initialTitle,
                 initialText = initialText,
@@ -1229,17 +1173,58 @@ private fun HomeTabContent() {
                 initialRepeatRule = initialRepeat,
                 initialNoteDateTimeMillis = if (editingId == null) selectedCalendarDateTimeMillis else loadedEntry?.timestampMillis,
                 highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
-                onSave = { result ->
+               
+                        onSave = { result ->
                     if (editingId == null) {
-                        noteTitle = result.title
-                        noteText = result.text
-                        locationText = result.locationUrl
-                        noteTags = result.tags
-                        pendingAttachments = pendingAttachments + result.newAttachments
-                        reminderAtMillis = result.reminderAtMillis
-                        dueAtMillis = result.dueAtMillis
-                        repeatConfig = RepeatConfig.fromStored(result.repeatRule)
-                        selectedCalendarDateTimeMillis = result.noteDateTimeMillis
+                        // Save immediately, the same way the main "Save entry"
+                        // button does — full-screen Save and the main button
+                        // must behave identically, not leave a half-saved draft
+                        // sitting in the main form.
+                        if (result.title.isNotBlank() || result.text.isNotBlank() || result.locationUrl.isNotBlank() ||
+                            result.newAttachments.isNotEmpty() || pendingAttachments.isNotEmpty()
+                        ) {
+                            scope.launch {
+                                val nowMillis = System.currentTimeMillis()
+                                val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(nowMillis)
+                                val targetDateKey = selectedDate ?: todayKey
+                                val entryTimestamp = result.noteDateTimeMillis ?: selectedCalendarDateTimeMillis ?: nowMillis
+                                val finalRepeatConfig = RepeatConfig.fromStored(result.repeatRule)
+                                val finalAttachments = pendingAttachments + result.newAttachments
+
+                                val newId = AppDatabase.getInstance(context).logEntryDao().insert(
+                                    LogEntry(
+                                        timestampMillis = entryTimestamp,
+                                        dateKey = targetDateKey,
+                                        source = "manual_note",
+                                        title = result.title.ifBlank { null },
+                                        note = result.text.ifBlank { null },
+                                        locationUrl = result.locationUrl.ifBlank { null },
+                                        attachmentFileName = AttachmentListUtil.toStored(finalAttachments.map { it.name }),
+                                        reminderAtMillis = result.reminderAtMillis,
+                                        dueAtMillis = result.dueAtMillis,
+                                        repeatRule = if (finalRepeatConfig.type != "NONE") finalRepeatConfig.toStored() else null,
+                                        lastModifiedMillis = entryTimestamp,
+                                        tags = TagListUtil.toStored(result.tags)
+                                    )
+                                )
+                                result.reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
+                                result.dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, newId, it) }
+                                if (finalRepeatConfig.type != "NONE") {
+                                    RepeatScheduling.firstTrigger(finalRepeatConfig.toStored())?.let {
+                                        NoteReminderScheduler.scheduleRepeat(context, newId, it)
+                                    }
+                                }
+
+                                AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
+                                    CalendarWriter.refreshEntry(context, it)
+                                }
+
+                                resetMainEntryFields()
+                                refreshDates()
+                                loadAllTags()
+                                openDate(targetDateKey)
+                            }
+                        }
                     } else {
                         scope.launch {
                             loadedEntry?.let { entry ->
