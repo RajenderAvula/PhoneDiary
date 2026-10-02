@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.net.Uri
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -39,7 +40,13 @@ fun AttachmentPreview(
         tonalElevation = 1.dp
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+                .then(
+                    if (uri != null) Modifier.clickable { openWithChooser(context, uri, name) }
+                    else Modifier
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
             when {
@@ -60,11 +67,12 @@ fun AttachmentPreview(
                 }
                 else -> {
                     Text(name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { openWithSystemViewer(context, uri) }) { Text("Open") }
+                    Text("Open ↗", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
             }
 
             onRemove?.let {
+                Spacer(Modifier.width(8.dp))
                 TextButton(onClick = it) { Text("✕") }
             }
         }
@@ -79,19 +87,13 @@ private fun ImageThumbnail(uri: Uri) {
 
     LaunchedEffect(uri) {
         bitmap = withContext(Dispatchers.IO) {
-            try {
-                decodeSampledBitmap(context, uri, 160, 160)
-            } catch (e: Exception) {
-                null
-            }
+            try { decodeSampledBitmap(context, uri, 160, 160) } catch (e: Exception) { null }
         }
         if (bitmap == null) failed = true
     }
 
     Box(
-        modifier = Modifier
-            .size(56.dp)
-            .clip(RoundedCornerShape(4.dp)),
+        modifier = Modifier.size(56.dp).clip(RoundedCornerShape(4.dp)),
         contentAlignment = Alignment.Center
     ) {
         val bmp = bitmap
@@ -105,14 +107,12 @@ private fun ImageThumbnail(uri: Uri) {
 
 private fun decodeSampledBitmap(context: android.content.Context, uri: Uri, reqWidth: Int, reqHeight: Int): Bitmap? {
     val resolver = context.contentResolver
-
     val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOptions) }
-        ?: return null
+    resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOptions) } ?: return null
 
     var sampleSize = 1
-    var halfWidth = boundsOptions.outWidth / 2
-    var halfHeight = boundsOptions.outHeight / 2
+    val halfWidth = boundsOptions.outWidth / 2
+    val halfHeight = boundsOptions.outHeight / 2
     while (halfWidth / sampleSize >= reqWidth && halfHeight / sampleSize >= reqHeight) {
         sampleSize *= 2
     }
@@ -128,29 +128,21 @@ private fun AudioPlayButton(uri: Uri) {
     var player by remember(uri) { mutableStateOf<MediaPlayer?>(null) }
 
     DisposableEffect(uri) {
-        onDispose {
-            player?.release()
-            player = null
-        }
+        onDispose { player?.release(); player = null }
     }
 
     IconButton(onClick = {
         if (isPlaying) {
-            player?.stop()
-            player?.release()
-            player = null
+            player?.stop(); player?.release(); player = null
             isPlaying = false
         } else {
             try {
                 val mp = MediaPlayer()
                 mp.setDataSource(context, uri)
                 mp.setOnCompletionListener {
-                    isPlaying = false
-                    player?.release()
-                    player = null
+                    isPlaying = false; player?.release(); player = null
                 }
-                mp.prepare()
-                mp.start()
+                mp.prepare(); mp.start()
                 player = mp
                 isPlaying = true
             } catch (e: Exception) {
@@ -162,15 +154,19 @@ private fun AudioPlayButton(uri: Uri) {
     }
 }
 
-private fun openWithSystemViewer(context: android.content.Context, uri: Uri) {
+/** Opens a real app chooser so the user can pick an app to preview the file with. */
+private fun openWithChooser(context: android.content.Context, uri: Uri, name: String) {
     try {
-        val mime = context.contentResolver.getType(uri) ?: "*/*"
+        val mime = context.contentResolver.getType(uri)
+            ?: android.webkit.MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(extensionOf(name))
+            ?: "*/*"
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(intent)
+        context.startActivity(Intent.createChooser(intent, "Open with"))
     } catch (e: Exception) {
-        // No app can open it — ignore.
+        // No app can handle it — ignore rather than crash.
     }
 }
