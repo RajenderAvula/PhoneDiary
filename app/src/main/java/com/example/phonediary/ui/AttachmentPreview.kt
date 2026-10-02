@@ -79,7 +79,7 @@ fun AttachmentPreview(
     }
 }
 
-@Composable
+/*@Composable
 private fun ImageThumbnail(uri: Uri) {
     val context = LocalContext.current
     var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
@@ -88,6 +88,23 @@ private fun ImageThumbnail(uri: Uri) {
     LaunchedEffect(uri) {
         bitmap = withContext(Dispatchers.IO) {
             try { decodeSampledBitmap(context, uri, 160, 160) } catch (e: Exception) { null }
+        }
+        if (bitmap == null) failed = true
+    }*/
+    @Composable
+private fun ImageThumbnail(uri: Uri) {
+    val context = LocalContext.current
+    var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
+    var failed by remember(uri) { mutableStateOf(false) }
+
+    LaunchedEffect(uri) {
+        // Hard timeout: a stuck or slow decode (pending MediaStore row,
+        // huge file, odd format) must never spin the loading icon forever —
+        // it falls back to the 🖼 placeholder instead.
+        bitmap = kotlinx.coroutines.withTimeoutOrNull(5000) {
+            withContext(Dispatchers.IO) {
+                try { decodeSampledBitmap(context, uri, 160, 160) } catch (e: Throwable) { null }
+            }
         }
         if (bitmap == null) failed = true
     }
