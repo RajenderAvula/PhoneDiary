@@ -1,15 +1,16 @@
 package com.example.phonediary.ui
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,7 +24,6 @@ import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.files.LocationOpenHelper
 import com.example.phonediary.files.LocationPinHelper
-import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NotePrintHelper
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.SavedAttachment
@@ -33,8 +33,6 @@ import com.example.phonediary.files.VideoCaptureHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
-import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.RoundedCornerShape
 
 data class FullScreenNoteResult(
     val title: String,
@@ -73,11 +71,10 @@ fun FullScreenNoteEditor(
 
     var title by remember { mutableStateOf(initialTitle) }
 
-    // Text is now a TextFieldValue so we can insert markers at the exact cursor position.
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(initialText, selection = TextRange(initialText.length)))
     }
-var isViewMode by remember { mutableStateOf(false) }
+
     var locationUrl by remember { mutableStateOf(initialLocationUrl) }
     var tagInput by remember { mutableStateOf("") }
     var tags by remember { mutableStateOf(initialTags) }
@@ -101,6 +98,7 @@ var isViewMode by remember { mutableStateOf(false) }
 
     var showScribblePad by remember { mutableStateOf(false) }
     var isScanningText by remember { mutableStateOf(false) }
+    var isViewMode by remember { mutableStateOf(false) }
 
     fun insertAtCursor(marker: String) {
         val cursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
@@ -110,7 +108,7 @@ var isViewMode by remember { mutableStateOf(false) }
 
     fun openMarkerAttachment(name: String) {
         scope.launch {
-            val uri = MediaResolveUtil.resolve(context, name)
+            val uri = com.example.phonediary.files.MediaResolveUtil.resolve(context, name)
             if (uri != null) {
                 try {
                     val mime = context.contentResolver.getType(uri) ?: "*/*"
@@ -118,9 +116,9 @@ var isViewMode by remember { mutableStateOf(false) }
                         setDataAndType(uri, mime)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
-                    context.startActivity(intent)
+                    context.startActivity(Intent.createChooser(intent, "Open with"))
                 } catch (e: Exception) {
-                    // No app can open it — ignore rather than crash.
+                    // No app can open it — ignore.
                 }
             }
         }
@@ -228,9 +226,10 @@ var isViewMode by remember { mutableStateOf(false) }
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        if (uris.isNotEmpty()) {
+        val distinctUris = uris.distinct()
+        if (distinctUris.isNotEmpty()) {
             scope.launch {
-                val saved = uris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
+                val saved = distinctUris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
                 newAttachments = newAttachments + saved
             }
         }
@@ -239,7 +238,7 @@ var isViewMode by remember { mutableStateOf(false) }
     val videoCaptureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
             val uri = pendingVideoUri
             val name = pendingVideoName
             if (uri != null && name != null) {
@@ -373,9 +372,6 @@ var isViewMode by remember { mutableStateOf(false) }
                 Spacer(Modifier.height(4.dp))
             }
 
-            // ---- The note box itself: clickable markers + scribble docks right here ----
-
-
             // ---- View / Edit toggle for the note box ----
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -430,8 +426,6 @@ var isViewMode by remember { mutableStateOf(false) }
                     IconButton(onClick = { showScribblePad = true }) { Text("✍") }
                 }
             }
-
-          
 
             if (isStreamingListening || streamingPartialText.isNotBlank()) {
                 Text(
@@ -533,29 +527,6 @@ var isViewMode by remember { mutableStateOf(false) }
                 )
             }
 
-           /* Spacer(Modifier.height(12.dp))
-            Text("Attachments", style = MaterialTheme.typography.titleSmall)
-            if (existingAttachmentNames.isNotEmpty()) {
-                existingAttachmentNames.forEach { name ->
-                    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
-                    LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
-                    AttachmentPreview(
-                        name = name,
-                        uri = resolvedUri,
-                        onRemove = { existingAttachmentNames = existingAttachmentNames.filterNot { it == name } }
-                    )
-                }
-            }
-            if (newAttachments.isNotEmpty()) {
-                newAttachments.forEach { attachment ->
-                    AttachmentPreview(
-                        name = attachment.name,
-                        uri = attachment.uri,
-                        onRemove = { newAttachments = newAttachments.filterNot { it.name == attachment.name } }
-                    )
-                }
-            }*/
-
             Spacer(Modifier.height(12.dp))
             Text("Attachments", style = MaterialTheme.typography.titleSmall)
             val markerNames = remember(textFieldValue.text) {
@@ -565,14 +536,11 @@ var isViewMode by remember { mutableStateOf(false) }
                 Text("None yet", style = MaterialTheme.typography.bodySmall)
             }
             existingAttachmentNames.forEach { name ->
-                var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
-                LaunchedEffect(name) { resolvedUri = MediaResolveUtil.resolve(context, name) }
                 if (name in markerNames) {
                     Text("↳ referenced in note text", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
-                AttachmentPreview(
+                ResolvingAttachmentPreview(
                     name = name,
-                    uri = resolvedUri,
                     onRemove = { existingAttachmentNames = existingAttachmentNames.filterNot { it == name } }
                 )
             }
@@ -597,17 +565,18 @@ var isViewMode by remember { mutableStateOf(false) }
             }
         }
     }
-      if (showScribblePad) {
-                InlineScribblePad(
-                    onInsert = { bitmap ->
-                        val saved = FileAttachmentHelper.saveBitmapAsAttachment(context, bitmap)
-                        if (saved != null) {
-                            newAttachments = newAttachments + saved
-                            insertAtCursor("✍[drawing: ${saved.name}]")
-                        }
-                        showScribblePad = false
-                    },
-                    onCancel = { showScribblePad = false }
-                )
-            }
+
+    if (showScribblePad) {
+        InlineScribblePad(
+            onInsert = { bitmap ->
+                val saved = FileAttachmentHelper.saveBitmapAsAttachment(context, bitmap)
+                if (saved != null) {
+                    newAttachments = newAttachments + saved
+                    insertAtCursor("✍[drawing: ${saved.name}]")
+                }
+                showScribblePad = false
+            },
+            onCancel = { showScribblePad = false }
+        )
+    }
 }
