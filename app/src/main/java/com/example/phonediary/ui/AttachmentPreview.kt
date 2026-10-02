@@ -19,16 +19,24 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private val imageExtensions = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp")
 private val audioExtensions = setOf("mp3", "m4a", "wav", "ogg", "aac")
 
 private fun extensionOf(name: String): String = name.substringAfterLast('.', "").lowercase()
 
+/**
+ * Presentational: shows exactly what it's given.
+ * - uri == null && showLoading == true  -> spinner (still resolving)
+ * - uri == null && showLoading == false -> "not found" state, no infinite spin
+ * - uri != null                         -> thumbnail/player/open-with, tappable
+ */
 @Composable
 fun AttachmentPreview(
     name: String,
     uri: Uri?,
+    showLoading: Boolean = (uri == null),
     onRemove: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -50,10 +58,22 @@ fun AttachmentPreview(
             verticalAlignment = Alignment.CenterVertically
         ) {
             when {
-                uri == null -> {
+                uri == null && showLoading -> {
                     CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                     Text(name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                }
+                uri == null -> {
+                    Text("⚠", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(name, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "File not found — it may have been moved or deleted",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
                 ext in imageExtensions -> {
                     ImageThumbnail(uri)
@@ -79,29 +99,51 @@ fun AttachmentPreview(
     }
 }
 
-/*@Composable
-private fun ImageThumbnail(uri: Uri) {
+/**
+ * Self-resolving wrapper: looks up [name] via MediaResolveUtil with a
+ * hard timeout, then renders AttachmentPreview with showLoading correctly
+ * set to false once resolution finishes — whether it succeeded or not.
+ * Use this everywhere instead of hand-rolling a LaunchedEffect, so a
+ * failed/slow lookup can never spin forever again.
+ */
+@Composable
+fun ResolvingAttachmentPreview(
+    name: String,
+    onRemove: (() -> Unit)? = null
+) {
     val context = LocalContext.current
-    var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
-    var failed by remember(uri) { mutableStateOf(false) }
+    var resolvedUri by remember(name) { mutableStateOf<Uri?>(null) }
+    var resolutionFinished by remember(name) { mutableStateOf(false) }
 
-    LaunchedEffect(uri) {
-        bitmap = withContext(Dispatchers.IO) {
-            try { decodeSampledBitmap(context, uri, 160, 160) } catch (e: Exception) { null }
+    LaunchedEffect(name) {
+        resolvedUri = withTimeoutOrNull(6000) {
+            withContext(Dispatchers.IO) {
+                try {
+                    com.example.phonediary.files.MediaResolveUtil.resolve(context, name)
+                } catch (e: Throwable) {
+                    null
+                }
+            }
         }
-        if (bitmap == null) failed = true
-    }*/
-    @Composable
+        resolutionFinished = true
+    }
+
+    AttachmentPreview(
+        name = name,
+        uri = resolvedUri,
+        showLoading = !resolutionFinished,
+        onRemove = onRemove
+    )
+}
+
+@Composable
 private fun ImageThumbnail(uri: Uri) {
     val context = LocalContext.current
     var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
     var failed by remember(uri) { mutableStateOf(false) }
 
     LaunchedEffect(uri) {
-        // Hard timeout: a stuck or slow decode (pending MediaStore row,
-        // huge file, odd format) must never spin the loading icon forever —
-        // it falls back to the 🖼 placeholder instead.
-        bitmap = kotlinx.coroutines.withTimeoutOrNull(5000) {
+        bitmap = withTimeoutOrNull(5000) {
             withContext(Dispatchers.IO) {
                 try { decodeSampledBitmap(context, uri, 160, 160) } catch (e: Throwable) { null }
             }
@@ -171,7 +213,6 @@ private fun AudioPlayButton(uri: Uri) {
     }
 }
 
-/** Opens a real app chooser so the user can pick an app to preview the file with. */
 private fun openWithChooser(context: android.content.Context, uri: Uri, name: String) {
     try {
         val mime = context.contentResolver.getType(uri)
@@ -184,6 +225,6 @@ private fun openWithChooser(context: android.content.Context, uri: Uri, name: St
         }
         context.startActivity(Intent.createChooser(intent, "Open with"))
     } catch (e: Exception) {
-        // No app can handle it — ignore rather than crash.
+        // No app can handle it — ignore.
     }
 }
