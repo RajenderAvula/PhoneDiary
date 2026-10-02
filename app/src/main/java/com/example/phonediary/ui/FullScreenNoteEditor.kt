@@ -427,23 +427,11 @@ var isViewMode by remember { mutableStateOf(false) }
                     }
                     IconButton(onClick = { insertImageLauncher.launch("image/*") }) { Text("🖼") }
                     IconButton(onClick = { attachFileLauncher.launch(arrayOf("*/*")) }) { Text("🔗") }
-                    IconButton(onClick = { showScribblePad = !showScribblePad }) { Text("✍") }
+                    IconButton(onClick = { showScribblePad = true }) { Text("✍") }
                 }
             }
 
-            if (showScribblePad) {
-                InlineScribblePad(
-                    onInsert = { bitmap ->
-                        val saved = FileAttachmentHelper.saveBitmapAsAttachment(context, bitmap)
-                        if (saved != null) {
-                            newAttachments = newAttachments + saved
-                            insertAtCursor("✍[drawing: ${saved.name}]")
-                        }
-                        showScribblePad = false
-                    },
-                    onCancel = { showScribblePad = false }
-                )
-            }
+          
 
             if (isStreamingListening || streamingPartialText.isNotBlank()) {
                 Text(
@@ -609,4 +597,17 @@ var isViewMode by remember { mutableStateOf(false) }
             }
         }
     }
+      if (showScribblePad) {
+                InlineScribblePad(
+                    onInsert = { bitmap ->
+                        val saved = FileAttachmentHelper.saveBitmapAsAttachment(context, bitmap)
+                        if (saved != null) {
+                            newAttachments = newAttachments + saved
+                            insertAtCursor("✍[drawing: ${saved.name}]")
+                        }
+                        showScribblePad = false
+                    },
+                    onCancel = { showScribblePad = false }
+                )
+            }
 }
