@@ -62,7 +62,7 @@ fun MapLocationPickerDialog(
                 modifier = Modifier.padding(12.dp)
             )
 
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            /*Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 GoogleMap(
                     modifier = Modifier.fillMaxSize(),
                     cameraPositionState = cameraPositionState,
@@ -88,6 +88,43 @@ fun MapLocationPickerDialog(
                             strokeColor = androidx.compose.ui.graphics.Color(0xFF7C6FE0)
                         )
                     }
+                }
+            }*/
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                var mapFailed by remember { mutableStateOf(false) }
+                if (mapFailed) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text("Map couldn't load.", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "This usually means the Google Maps API key is missing or invalid in the app's manifest.",
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                } else {
+                    runCatching {
+                        GoogleMap(
+                            modifier = Modifier.fillMaxSize(),
+                            cameraPositionState = cameraPositionState,
+                            onMapClick = { latLng -> pickedLatLng = latLng },
+                            onMapLoadFailed = { mapFailed = true }
+                        ) {
+                            pickedLatLng?.let { point ->
+                                Marker(state = MarkerState(position = point))
+                                Circle(
+                                    center = point,
+                                    radius = (radiusInput.toFloatOrNull() ?: 100f).toDouble().coerceIn(0.0, 200_000.0),
+                                    fillColor = androidx.compose.ui.graphics.Color(0x337C6FE0),
+                                    strokeColor = androidx.compose.ui.graphics.Color(0xFF7C6FE0)
+                                )
+                            }
+                        }
+                    }.onFailure { mapFailed = true }
                 }
             }
 
