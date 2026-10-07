@@ -20,10 +20,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import com.example.phonediary.data.LocationReminderItem
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.files.LocationOpenHelper
 import com.example.phonediary.files.LocationPinHelper
+import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NotePrintHelper
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.SavedAttachment
@@ -44,7 +46,8 @@ data class FullScreenNoteResult(
     val reminderAtMillis: Long?,
     val dueAtMillis: Long?,
     val repeatRule: String,
-    val noteDateTimeMillis: Long?
+    val noteDateTimeMillis: Long?,
+    val locationReminders: List<LocationReminderItem>
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,6 +62,7 @@ fun FullScreenNoteEditor(
     initialDueAtMillis: Long?,
     initialRepeatRule: String,
     initialNoteDateTimeMillis: Long?,
+    initialLocationReminders: List<LocationReminderItem> = emptyList(),
     highlightQuery: String? = null,
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
@@ -91,6 +95,8 @@ fun FullScreenNoteEditor(
 
     var noteDateTimeMillis by remember { mutableStateOf(initialNoteDateTimeMillis) }
 
+    var locationReminders by remember { mutableStateOf(initialLocationReminders) }
+
     var isOneShotListening by remember { mutableStateOf(false) }
     var isStreamingListening by remember { mutableStateOf(false) }
     var streamingPartialText by remember { mutableStateOf("") }
@@ -108,7 +114,7 @@ fun FullScreenNoteEditor(
 
     fun openMarkerAttachment(name: String) {
         scope.launch {
-            val uri = com.example.phonediary.files.MediaResolveUtil.resolve(context, name)
+            val uri = MediaResolveUtil.resolve(context, name)
             if (uri != null) {
                 try {
                     val mime = context.contentResolver.getType(uri) ?: "*/*"
@@ -324,7 +330,8 @@ fun FullScreenNoteEditor(
                                 reminderAtMillis = reminderAtMillis,
                                 dueAtMillis = dueAtMillis,
                                 repeatRule = repeatRule,
-                                noteDateTimeMillis = noteDateTimeMillis
+                                noteDateTimeMillis = noteDateTimeMillis,
+                                locationReminders = locationReminders
                             )
                         )
                     }) { Text("Save") }
@@ -526,6 +533,12 @@ fun FullScreenNoteEditor(
                     onDismiss = { showRepeatDialogFS = false }
                 )
             }
+
+            Spacer(Modifier.height(12.dp))
+            LocationReminderSection(
+                items = locationReminders,
+                onItemsChanged = { locationReminders = it }
+            )
 
             Spacer(Modifier.height(12.dp))
             Text("Attachments", style = MaterialTheme.typography.titleSmall)
