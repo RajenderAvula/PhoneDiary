@@ -91,8 +91,8 @@ fun MapLocationPickerDialog(
                 }
             }*/
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                var mapFailed by remember { mutableStateOf(false) }
-                if (mapFailed) {
+                var isMapLoaded by remember { mutableStateOf(false) }
+                if (isMapLoaded) {
                     Column(
                         modifier = Modifier.fillMaxSize().padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
