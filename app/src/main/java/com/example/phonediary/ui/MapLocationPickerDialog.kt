@@ -68,7 +68,7 @@ fun MapLocationPickerDialog(
                     cameraPositionState = cameraPositionState,
                     onMapClick = { latLng -> pickedLatLng = latLng }
                 ) {
-                    pickedLatLng?.let { point ->
+                    /*pickedLatLng?.let { point ->
                         Marker(state = MarkerState(position = point))
                         Circle(
                             center = point,
@@ -77,6 +77,15 @@ fun MapLocationPickerDialog(
                                 android.graphics.Color.argb(50, 124, 111, 224)
                             },
                             strokeColor = android.graphics.Color.rgb(124, 111, 224)
+                        )
+                    }*/
+                    pickedLatLng?.let { point ->
+                        Marker(state = MarkerState(position = point))
+                        Circle(
+                            center = point,
+                            radius = (radiusInput.toFloatOrNull() ?: 100f).toDouble().coerceIn(0.0, 200_000.0),
+                            fillColor = androidx.compose.ui.graphics.Color(0x337C6FE0),
+                            strokeColor = androidx.compose.ui.graphics.Color(0xFF7C6FE0)
                         )
                     }
                 }
