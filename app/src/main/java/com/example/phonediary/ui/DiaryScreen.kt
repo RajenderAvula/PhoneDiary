@@ -9,6 +9,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.CalendarContract
+import android.provider.MediaStore
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,6 +32,8 @@ import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.AttachmentListUtil
 import com.example.phonediary.data.AttachmentListUtil as TagListUtil
+import com.example.phonediary.data.LocationReminderItem
+import com.example.phonediary.data.LocationReminderListUtil
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.BackupHelper
@@ -43,6 +46,7 @@ import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
 import com.example.phonediary.files.VideoCaptureHelper
+import com.example.phonediary.reminders.GeofenceHelper
 import com.example.phonediary.reminders.NoteReminderScheduler
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
@@ -160,6 +164,9 @@ private fun HomeTabContent() {
     var repeatConfig by remember { mutableStateOf(RepeatConfig.NONE) }
     var showRepeatDialog by remember { mutableStateOf(false) }
 
+    // ---- Location-based reminders (geofences) for the main composer ----
+    var mainLocationReminders by remember { mutableStateOf(listOf<LocationReminderItem>()) }
+
     var calendarStatus by remember { mutableStateOf<String?>(null) }
 
     var editingEntryId by remember { mutableStateOf<Long?>(null) }
@@ -171,6 +178,7 @@ private fun HomeTabContent() {
     var editingDueAtMillis by remember { mutableStateOf<Long?>(null) }
     var editingRepeatConfig by remember { mutableStateOf(RepeatConfig.NONE) }
     var showEditRepeatDialog by remember { mutableStateOf(false) }
+    var editingLocationReminders by remember { mutableStateOf(listOf<LocationReminderItem>()) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
@@ -298,6 +306,7 @@ private fun HomeTabContent() {
         selectedCalendarDateTimeMillis = null
         noteTags = emptyList()
         mainTagInput = ""
+        mainLocationReminders = emptyList()
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -346,8 +355,8 @@ private fun HomeTabContent() {
         val (uri, name) = result
         pendingVideoUri = uri
         pendingVideoName = name
-        val intent = Intent(android.provider.MediaStore.ACTION_VIDEO_CAPTURE).apply {
-            putExtra(android.provider.MediaStore.EXTRA_OUTPUT, uri)
+        val intent = Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply {
+            putExtra(MediaStore.EXTRA_OUTPUT, uri)
         }
         if (intent.resolveActivity(context.packageManager) != null) {
             videoCaptureLauncher.launch(intent)
@@ -447,6 +456,7 @@ private fun HomeTabContent() {
                 NoteReminderScheduler.cancelReminder(context, it.id)
                 NoteReminderScheduler.cancelDue(context, it.id)
                 NoteReminderScheduler.cancelRepeat(context, it.id)
+                GeofenceHelper.removeAllGeofencesForEntry(context, it.id, LocationReminderListUtil.fromStored(it.locationReminders))
                 CalendarWriter.deleteEntryEvent(context, it.id)
                 dao.delete(it)
             }
@@ -461,6 +471,7 @@ private fun HomeTabContent() {
             NoteReminderScheduler.cancelReminder(context, entry.id)
             NoteReminderScheduler.cancelDue(context, entry.id)
             NoteReminderScheduler.cancelRepeat(context, entry.id)
+            GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, LocationReminderListUtil.fromStored(entry.locationReminders))
             CalendarWriter.deleteEntryEvent(context, entry.id)
             AppDatabase.getInstance(context).logEntryDao().delete(entry)
             openDate(dateKey)
@@ -772,6 +783,12 @@ private fun HomeTabContent() {
         }
 
         Spacer(Modifier.height(8.dp))
+        LocationReminderSection(
+            items = mainLocationReminders,
+            onItemsChanged = { mainLocationReminders = it }
+        )
+
+        Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) { Text("Attach files") }
             Spacer(Modifier.width(8.dp))
@@ -818,7 +835,8 @@ private fun HomeTabContent() {
                                 dueAtMillis = dueAtMillis,
                                 repeatRule = if (repeatConfig.type != "NONE") repeatConfig.toStored() else null,
                                 lastModifiedMillis = entryTimestamp,
-                                tags = TagListUtil.toStored(noteTags)
+                                tags = TagListUtil.toStored(noteTags),
+                                locationReminders = LocationReminderListUtil.toStored(mainLocationReminders)
                             )
                         )
                         reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
@@ -828,6 +846,7 @@ private fun HomeTabContent() {
                                 NoteReminderScheduler.scheduleRepeat(context, newId, it)
                             }
                         }
+                        GeofenceHelper.syncGeofencesForEntry(context, newId, mainLocationReminders)
 
                         AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
                             CalendarWriter.refreshEntry(context, it)
@@ -957,6 +976,11 @@ private fun HomeTabContent() {
                                     onDismiss = { showEditRepeatDialog = false }
                                 )
                             }
+                            Spacer(Modifier.height(6.dp))
+                            LocationReminderSection(
+                                items = editingLocationReminders,
+                                onItemsChanged = { editingLocationReminders = it }
+                            )
                             Spacer(Modifier.height(4.dp))
                             Text("Attachments:", style = MaterialTheme.typography.bodySmall)
                             if (editingAttachments.isEmpty()) {
@@ -980,6 +1004,7 @@ private fun HomeTabContent() {
                                             reminderAtMillis = editingReminderAtMillis,
                                             dueAtMillis = editingDueAtMillis,
                                             repeatRule = if (editingRepeatConfig.type != "NONE") editingRepeatConfig.toStored() else null,
+                                            locationReminders = LocationReminderListUtil.toStored(editingLocationReminders),
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
@@ -993,6 +1018,7 @@ private fun HomeTabContent() {
                                                 NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
                                             }
                                         }
+                                        GeofenceHelper.syncGeofencesForEntry(context, entry.id, editingLocationReminders)
                                         CalendarWriter.refreshEntry(context, updated)
                                         editingEntryId = null
                                         openDate(date)
@@ -1032,6 +1058,7 @@ private fun HomeTabContent() {
                                             editingReminderAtMillis = entry.reminderAtMillis
                                             editingDueAtMillis = entry.dueAtMillis
                                             editingRepeatConfig = RepeatConfig.fromStored(entry.repeatRule)
+                                            editingLocationReminders = LocationReminderListUtil.fromStored(entry.locationReminders)
                                         }) { Text("Edit") }
                                         TextButton(onClick = { NoteShareHelper.shareNote(context, entry) }) { Text("📤") }
                                         TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
@@ -1055,6 +1082,14 @@ private fun HomeTabContent() {
                                 entry.dueAtMillis?.let { Text("📅 Due ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall) }
                                 entry.repeatRule?.takeIf { it != "NONE" }?.let {
                                     Text("🔁 ${repeatDisplayLabel2(it)}", style = MaterialTheme.typography.bodySmall)
+                                }
+                                val entryLocReminders = LocationReminderListUtil.fromStored(entry.locationReminders)
+                                if (entryLocReminders.isNotEmpty()) {
+                                    val enabledCount = entryLocReminders.count { it.enabled }
+                                    Text(
+                                        "📍🔔 ${entryLocReminders.size} location reminder(s), $enabledCount on",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
                                 }
                                 AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
                                     ResolvingAttachmentPreview(name = name)
@@ -1126,6 +1161,7 @@ private fun HomeTabContent() {
             val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
             val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
             val initialNoteDateTime = if (editingId == null) selectedCalendarDateTimeMillis else loadedEntry?.timestampMillis
+            val initialLocReminders = if (editingId == null) mainLocationReminders else LocationReminderListUtil.fromStored(loadedEntry?.locationReminders)
 
             FullScreenNoteEditor(
                 initialTitle = initialTitle,
@@ -1137,6 +1173,7 @@ private fun HomeTabContent() {
                 initialDueAtMillis = initialDue,
                 initialRepeatRule = initialRepeat,
                 initialNoteDateTimeMillis = initialNoteDateTime,
+                initialLocationReminders = initialLocReminders,
                 highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
                 onSave = { result ->
                     if (editingId == null) {
@@ -1166,7 +1203,8 @@ private fun HomeTabContent() {
                                         dueAtMillis = result.dueAtMillis,
                                         repeatRule = if (finalRepeatConfig.type != "NONE") finalRepeatConfig.toStored() else null,
                                         lastModifiedMillis = entryTimestamp,
-                                        tags = TagListUtil.toStored(result.tags)
+                                        tags = TagListUtil.toStored(result.tags),
+                                        locationReminders = LocationReminderListUtil.toStored(result.locationReminders)
                                     )
                                 )
                                 result.reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
@@ -1176,6 +1214,7 @@ private fun HomeTabContent() {
                                         NoteReminderScheduler.scheduleRepeat(context, newId, it)
                                     }
                                 }
+                                GeofenceHelper.syncGeofencesForEntry(context, newId, result.locationReminders)
 
                                 AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
                                     CalendarWriter.refreshEntry(context, it)
@@ -1200,6 +1239,7 @@ private fun HomeTabContent() {
                                     reminderAtMillis = result.reminderAtMillis,
                                     dueAtMillis = result.dueAtMillis,
                                     repeatRule = result.repeatRule,
+                                    locationReminders = LocationReminderListUtil.toStored(result.locationReminders),
                                     timestampMillis = result.noteDateTimeMillis ?: entry.timestampMillis,
                                     lastModifiedMillis = System.currentTimeMillis()
                                 )
@@ -1214,6 +1254,7 @@ private fun HomeTabContent() {
                                         NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
                                     }
                                 }
+                                GeofenceHelper.syncGeofencesForEntry(context, entry.id, result.locationReminders)
                                 CalendarWriter.refreshEntry(context, updated)
                                 loadAllTags()
                                 selectedDate?.let { openDate(it) }
@@ -1382,6 +1423,31 @@ private fun SettingsPanel(
             "If reminders still don't fire after allowing both, some phone brands (Xiaomi, Oppo, etc.) require 'Autostart' or battery-saver exemption too.",
             style = MaterialTheme.typography.bodySmall
         )
+
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Location reminders", style = MaterialTheme.typography.titleSmall)
+        val hasBgLocation = remember { GeofenceHelper.hasBackgroundLocationPermission(context) }
+        Text(
+            if (hasBgLocation) "Background location: granted ✓" else "Background location: NOT granted — location reminders won't fire while the app is closed",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (!hasBgLocation) {
+            Button(onClick = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", context.packageName, null)
+                        }
+                    )
+                }
+            }) { Text("Grant background location") }
+            Text(
+                "Open the app's permission page and set Location to 'Allow all the time'.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
         Divider()
