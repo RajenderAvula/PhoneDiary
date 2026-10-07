@@ -155,9 +155,56 @@ fun MapLocationPickerDialog(
         }
     }
 }
-
-/** Small internal full-screen dialog scaffold shared by this picker. */
+/**
+ * Full-screen dialog scaffold, hosted in its own Android window via
+ * Dialog(...) — NOT composed as a direct child of whatever called this.
+ * This is required because LocationReminderSection (the caller) lives
+ * inside a verticalScroll(...) column, which hands its children infinite
+ * height; a Scaffold composed directly there crashes immediately trying
+ * to fill that infinite space. A Dialog's own window has real, bounded
+ * constraints regardless of where in the tree it was triggered from.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Dialog_FullScreenScaffold(
+    title: String,
+    onDismiss: () -> Unit,
+    confirmLabel: String,
+    confirmEnabled: Boolean,
+    onConfirm: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text(title) },
+                        navigationIcon = {
+                            TextButton(onClick = onDismiss) { Text("✕ Cancel") }
+                        },
+                        actions = {
+                            TextButton(enabled = confirmEnabled, onClick = onConfirm) { Text(confirmLabel) }
+                        }
+                    )
+                }
+            ) { padding ->
+                Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+                    content()
+                }
+            }
+        }
+    }
+}
+/** Small internal full-screen dialog scaffold shared by this picker. */
+/*@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Dialog_FullScreenScaffold(
     title: String,
@@ -184,4 +231,4 @@ private fun Dialog_FullScreenScaffold(
             content()
         }
     }
-}
+}*/
