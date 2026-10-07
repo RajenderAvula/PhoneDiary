@@ -55,6 +55,8 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
+import com.example.phonediary.CrashLogger
+import androidx.compose.foundation.text.selection.SelectionContainer
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -1394,6 +1396,34 @@ private fun SettingsPanel(
 
     Column {
         Text("Settings", style = MaterialTheme.typography.titleMedium)
+        val lastCrash = remember { CrashLogger.readLastCrash(context) }
+        if (lastCrash != null) {
+            Spacer(Modifier.height(8.dp))
+            Divider()
+            Spacer(Modifier.height(8.dp))
+            Text("Last crash log", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+            var expanded by remember { mutableStateOf(false) }
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Hide" else "Show crash details")
+            }
+            if (expanded) {
+                SelectionContainer {
+                    Text(lastCrash, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Row {
+                OutlinedButton(onClick = {
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "Phone Diary crash log")
+                        putExtra(Intent.EXTRA_TEXT, lastCrash)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share crash log"))
+                }) { Text("Share") }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { CrashLogger.clearLastCrash(context) }) { Text("Clear") }
+            }
+        }
 
         Spacer(Modifier.height(8.dp))
         Divider()
