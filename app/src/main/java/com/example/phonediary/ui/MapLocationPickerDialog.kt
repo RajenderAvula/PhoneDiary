@@ -91,8 +91,8 @@ fun MapLocationPickerDialog(
                 }
             }*/
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                var isMapLoaded by remember { mutableStateOf(false) }
-                if (isMapLoaded) {
+                var mapFailed by remember { mutableStateOf(false) }
+                if (mapFailed) {
                     Column(
                         modifier = Modifier.fillMaxSize().padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -112,7 +112,7 @@ fun MapLocationPickerDialog(
                             modifier = Modifier.fillMaxSize(),
                             cameraPositionState = cameraPositionState,
                             onMapClick = { latLng -> pickedLatLng = latLng },
-                            onMapLoadFailed = { mapFailed = true }
+                           // onMapLoadFailed = { mapFailed = true }
                         ) {
                             pickedLatLng?.let { point ->
                                 Marker(state = MarkerState(position = point))
