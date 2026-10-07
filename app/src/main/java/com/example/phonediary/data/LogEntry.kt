@@ -16,6 +16,7 @@ data class LogEntry(
     val title: String? = null,
     val note: String? = null,
     val locationUrl: String? = null,
+    val locationReminders: String? = null,
     val attachmentFileName: String? = null,
     val reminderAtMillis: Long? = null,
     val dueAtMillis: Long? = null,
