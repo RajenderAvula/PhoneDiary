@@ -26,7 +26,7 @@ class GeofenceBroadcastReceiver : BroadcastReceiver() {
         val triggeringIds = event.triggeringGeofences?.map { it.requestId } ?: return
         if (triggeringIds.isEmpty()) return
 
-        val pendingResult = goAsync()
+       /* val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val dao = AppDatabase.getInstance(context).logEntryDao()
@@ -42,6 +42,37 @@ class GeofenceBroadcastReceiver : BroadcastReceiver() {
                         ?: "Untitled note"
 
                     showNotification(context, entryId, noteName, "You're near a saved location")
+                }
+            } finally {
+                pendingResult.finish()
+            }
+        }*/
+
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val dao = AppDatabase.getInstance(context).logEntryDao()
+                triggeringIds.forEach { requestId ->
+                    // requestId format: "entry_<entryId>_<locationId>"
+                    val match = Regex("""entry_(\d+)_(.+)""").find(requestId) ?: return@forEach
+                    val entryId = match.groupValues[1].toLongOrNull() ?: return@forEach
+                    val locationId = match.groupValues[2]
+                    val entry = dao.getById(entryId) ?: return@forEach
+
+                    createChannelIfNeeded(context)
+                    val noteName = entry.title?.takeIf { it.isNotBlank() }
+                        ?: entry.note?.takeIf { it.isNotBlank() }?.take(60)
+                        ?: "Untitled note"
+
+                    // Pull the location's own label (what the user named it
+                    // when pinning it on the map), not a generic message.
+                    val locationItems = com.example.phonediary.data.LocationReminderListUtil.fromStored(entry.locationReminders)
+                    val matchedLocation = locationItems.firstOrNull { it.id == locationId }
+                    val bodyText = matchedLocation?.label?.takeIf { it.isNotBlank() }
+                        ?.let { "You're near: $it" }
+                        ?: "You're near a saved location"
+
+                    showNotification(context, entryId, noteName, bodyText)
                 }
             } finally {
                 pendingResult.finish()
