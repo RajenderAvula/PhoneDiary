@@ -5,27 +5,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.data.LocationReminderItem
-
-/**
- * Renders the full list of location reminders for a note, each with its
- * own enable/disable toggle, label, radius, and a way to edit (re-pick
- * on the map) or remove it, plus an "Add location" button.
- */
-/*@Composable
-fun LocationReminderSection(
-    items: List<LocationReminderItem>,
-    onItemsChanged: (List<LocationReminderItem>) -> Unit
-) {*/
 
 @Composable
 fun LocationReminderSection(
     items: List<LocationReminderItem>,
     onItemsChanged: (List<LocationReminderItem>) -> Unit,
     registrationStatus: Map<String, Boolean> = emptyMap(),
-    registrationError: Map<String, String> = emptyMap()
+    registrationError: Map<String, String> = emptyMap(),
+    onToggle: ((LocationReminderItem) -> Unit)? = null
 ) {
+    val localContext = LocalContext.current
     var showPicker by remember { mutableStateOf(false) }
     var editingItem by remember { mutableStateOf<LocationReminderItem?>(null) }
 
@@ -43,43 +35,40 @@ fun LocationReminderSection(
             Switch(
                 checked = item.enabled,
                 onCheckedChange = { checked ->
-                    onItemsChanged(items.map { if (it.id == item.id) it.copy(enabled = checked) else it })
+                    val updated = item.copy(enabled = checked)
+                    onItemsChanged(items.map { if (it.id == item.id) updated else it })
+                    // Re-register immediately on toggle (not just on Save) —
+                    // Android/Play Services can silently drop a geofence when
+                    // the system Location toggle is cycled, so re-registering
+                    // every time the switch is turned on is the only way to
+                    // recover without requiring a full note save.
+                    onToggle?.invoke(updated)
                 }
             )
             Spacer(Modifier.width(8.dp))
-          /*  Column(modifier = Modifier.weight(1f)) {
-                Text(item.label, style = MaterialTheme.typography.bodyMedium)
-                val radiusLabel = if (item.radiusMeters >= 200_000f) "≈unlimited radius" else "${item.radiusMeters.toInt()}m radius"
-                Text(radiusLabel, style = MaterialTheme.typography.labelSmall)
-            }*/
             Column(modifier = Modifier.weight(1f)) {
                 Text(item.label, style = MaterialTheme.typography.bodyMedium)
                 val radiusLabel = if (item.radiusMeters >= 200_000f) "≈unlimited radius" else "${item.radiusMeters.toInt()}m radius"
                 Text(radiusLabel, style = MaterialTheme.typography.labelSmall)
-                /*if (item.enabled) {
-                    val registered = registrationStatus[item.id]
-                    when (registered) {
-                        true -> Text("● Active — will notify on arrival", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        false -> Text(
-                            "⚠ Not registered: ${registrationError[item.id] ?: "unknown error"}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        null -> Text("Registering…", style = MaterialTheme.typography.labelSmall)
-                    }
-                }*/
                 if (item.enabled) {
                     val registered = registrationStatus[item.id]
                     when (registered) {
                         true -> Text("● Active — will notify on arrival", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        false -> Text(
-                            "⚠ Not registered: ${registrationError[item.id] ?: "unknown error"}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        // No status yet means nothing has attempted registration —
-                        // registration only runs on Save, not while picking the
-                        // location. This is a "not yet" state, not an in-progress one.
+                        false -> {
+                            val errorMsg = registrationError[item.id] ?: "unknown error"
+                            Text(
+                                "⚠ Not registered: $errorMsg",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            if (errorMsg.contains("Location is turned off", ignoreCase = true)) {
+                                TextButton(onClick = {
+                                    localContext.startActivity(
+                                        android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                                    )
+                                }) { Text("Turn on Location") }
+                            }
+                        }
                         null -> Text(
                             "Will register when you Save",
                             style = MaterialTheme.typography.labelSmall,
