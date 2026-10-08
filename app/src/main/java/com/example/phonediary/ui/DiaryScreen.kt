@@ -791,11 +791,23 @@ private fun HomeTabContent() {
         }
 
         Spacer(Modifier.height(8.dp))
-        LocationReminderSection(
+        /*LocationReminderSection(
             items = mainLocationReminders,
             onItemsChanged = { mainLocationReminders = it },
             registrationStatus = mainGeofenceStatus,
             registrationError = mainGeofenceErrors
+        )*/
+        LocationReminderSection(
+            items = mainLocationReminders,
+            onItemsChanged = { mainLocationReminders = it },
+            registrationStatus = mainGeofenceStatus,
+            registrationError = mainGeofenceErrors,
+            onToggle = { item ->
+                // Main composer note has no id yet until Save — nothing to
+                // register against until then, so just clear stale status.
+                mainGeofenceStatus = mainGeofenceStatus - item.id
+                mainGeofenceErrors = mainGeofenceErrors - item.id
+            }
         )
 
         Spacer(Modifier.height(8.dp))
@@ -990,11 +1002,24 @@ private fun HomeTabContent() {
                                 )
                             }
                             Spacer(Modifier.height(6.dp))
-                            LocationReminderSection(
+                           /* LocationReminderSection(
                                 items = editingLocationReminders,
                                 onItemsChanged = { editingLocationReminders = it },
                                 registrationStatus = editingGeofenceStatus,
                                 registrationError = editingGeofenceErrors
+                            )*/
+
+                            LocationReminderSection(
+                                items = editingLocationReminders,
+                                onItemsChanged = { editingLocationReminders = it },
+                                registrationStatus = editingGeofenceStatus,
+                                registrationError = editingGeofenceErrors,
+                                onToggle = { item ->
+                                    GeofenceHelper.registerGeofence(context, entry.id, item) { success, error ->
+                                        editingGeofenceStatus = editingGeofenceStatus + (item.id to success)
+                                        if (error != null) editingGeofenceErrors = editingGeofenceErrors + (item.id to error)
+                                    }
+                                }
                             )
                             Spacer(Modifier.height(4.dp))
                             Text("Attachments:", style = MaterialTheme.typography.bodySmall)
