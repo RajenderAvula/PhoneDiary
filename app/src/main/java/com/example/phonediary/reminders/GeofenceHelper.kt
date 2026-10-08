@@ -44,7 +44,7 @@ object GeofenceHelper {
     private fun client(context: Context): GeofencingClient = LocationServices.getGeofencingClient(context)
 
     /** Registers (or re-registers) a geofence for one location reminder on one note. */
-    fun registerGeofence(context: Context, entryId: Long, item: LocationReminderItem) {
+  /*  fun registerGeofence(context: Context, entryId: Long, item: LocationReminderItem) {
         if (!item.enabled) {
             removeGeofence(context, entryId, item.id)
             return
@@ -69,6 +69,47 @@ object GeofenceHelper {
         } catch (e: SecurityException) {
             // Permission revoked between the check above and this call — ignore.
         }
+    }*/
+
+    /**
+     * Registers a geofence and reports back whether it actually succeeded,
+     * so the UI can show real status instead of assuming success silently.
+     */
+    fun registerGeofence(
+        context: Context,
+        entryId: Long,
+        item: LocationReminderItem,
+        onResult: ((success: Boolean, errorMessage: String?) -> Unit)? = null
+    ) {
+        if (!item.enabled) {
+            removeGeofence(context, entryId, item.id)
+            return
+        }
+        if (!hasLocationPermission(context)) {
+            onResult?.invoke(false, "Location permission not granted")
+            return
+        }
+
+        val geofence = Geofence.Builder()
+            .setRequestId(geofenceRequestId(entryId, item.id))
+            .setCircularRegion(item.latitude, item.longitude, item.effectiveRadiusMeters())
+            .setExpirationDuration(Geofence.NEVER_EXPIRE)
+            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER)
+            .build()
+
+        val request = GeofencingRequest.Builder()
+            .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
+            .addGeofence(geofence)
+            .build()
+
+        try {
+            @Suppress("MissingPermission")
+            client(context).addGeofences(request, pendingIntent(context))
+                .addOnSuccessListener { onResult?.invoke(true, null) }
+                .addOnFailureListener { e -> onResult?.invoke(false, e.message ?: "Unknown error") }
+        } catch (e: SecurityException) {
+            onResult?.invoke(false, "Permission error: ${e.message}")
+        }
     }
 
     fun removeGeofence(context: Context, entryId: Long, locationId: String) {
@@ -82,10 +123,26 @@ object GeofenceHelper {
     }
 
     /** Syncs a note's full location-reminder list: registers enabled ones, removes disabled ones. */
-    fun syncGeofencesForEntry(context: Context, entryId: Long, items: List<LocationReminderItem>) {
+    /*fun syncGeofencesForEntry(context: Context, entryId: Long, items: List<LocationReminderItem>) {
         items.forEach { item ->
             if (item.enabled) registerGeofence(context, entryId, item)
             else removeGeofence(context, entryId, item.id)
         }
     }
+}*/
+fun syncGeofencesForEntry(
+        context: Context,
+        entryId: Long,
+        items: List<LocationReminderItem>,
+        onResult: ((itemId: String, success: Boolean, errorMessage: String?) -> Unit)? = null
+    ) {
+        items.forEach { item ->
+            if (item.enabled) {
+                registerGeofence(context, entryId, item) { success, error ->
+                    onResult?.invoke(item.id, success, error)
+                }
+            } else {
+                removeGeofence(context, entryId, item.id)
+            }
+        }
 }
