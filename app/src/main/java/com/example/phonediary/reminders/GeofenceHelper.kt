@@ -22,6 +22,18 @@ object GeofenceHelper {
             PackageManager.PERMISSION_GRANTED
         return fine || coarse
     }
+    /** Whether the device's Location (GPS/network) service is actually turned on — separate from app permission. */
+    fun isLocationServiceEnabled(context: Context): Boolean {
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+        return try {
+            locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
+                locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun hasBackgroundLocationPermission(context: Context): Boolean {
 
     fun hasBackgroundLocationPermission(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
@@ -125,11 +137,19 @@ object GeofenceHelper {
             onResult?.invoke(false, "Location permission not granted")
             return
         }
-        if (!hasBackgroundLocationPermission(context)) {
+       /* if (!hasBackgroundLocationPermission(context)) {
             // Registration will still be attempted (foreground-only geofencing
             // is technically allowed), but flag this clearly since it's the
             // most common reason registration silently never calls back.
             onResult?.invoke(false, "Background location not granted — go to Settings and allow 'All the time'")
+            return
+        }*/
+        if (!hasBackgroundLocationPermission(context)) {
+            onResult?.invoke(false, "Background location not granted — go to Settings and allow 'All the time'")
+            return
+        }
+        if (!isLocationServiceEnabled(context)) {
+            onResult?.invoke(false, "Device Location is turned off — turn on Location in your phone's quick settings")
             return
         }
 
