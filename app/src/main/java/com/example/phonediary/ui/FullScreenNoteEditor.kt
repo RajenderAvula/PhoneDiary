@@ -65,6 +65,7 @@ fun FullScreenNoteEditor(
     initialNoteDateTimeMillis: Long?,
     initialLocationReminders: List<LocationReminderItem> = emptyList(),
     highlightQuery: String? = null,
+    existingEntryId: Long? = null,
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -538,11 +539,28 @@ fun FullScreenNoteEditor(
             }
 
             Spacer(Modifier.height(12.dp))
-            LocationReminderSection(
+         /*   LocationReminderSection(
                 items = locationReminders,
                 onItemsChanged = { locationReminders = it },
                 registrationStatus = geofenceStatus,
                 registrationError = geofenceErrors
+            )*/
+            LocationReminderSection(
+                items = locationReminders,
+                onItemsChanged = { locationReminders = it },
+                registrationStatus = geofenceStatus,
+                registrationError = geofenceErrors,
+                onToggle = { item ->
+                    if (existingEntryId != null) {
+                        GeofenceHelper.registerGeofence(context, existingEntryId, item) { success, error ->
+                            geofenceStatus = geofenceStatus + (item.id to success)
+                            if (error != null) geofenceErrors = geofenceErrors + (item.id to error)
+                        }
+                    } else {
+                        geofenceStatus = geofenceStatus - item.id
+                        geofenceErrors = geofenceErrors - item.id
+                    }
+                }
             )
 
             Spacer(Modifier.height(12.dp))
