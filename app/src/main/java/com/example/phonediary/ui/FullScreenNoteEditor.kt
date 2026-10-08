@@ -32,6 +32,7 @@ import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
 import com.example.phonediary.files.TextScanHelper
 import com.example.phonediary.files.VideoCaptureHelper
+import com.example.phonediary.reminders.GeofenceHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -96,6 +97,8 @@ fun FullScreenNoteEditor(
     var noteDateTimeMillis by remember { mutableStateOf(initialNoteDateTimeMillis) }
 
     var locationReminders by remember { mutableStateOf(initialLocationReminders) }
+    var geofenceStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var geofenceErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     var isOneShotListening by remember { mutableStateOf(false) }
     var isStreamingListening by remember { mutableStateOf(false) }
@@ -537,7 +540,9 @@ fun FullScreenNoteEditor(
             Spacer(Modifier.height(12.dp))
             LocationReminderSection(
                 items = locationReminders,
-                onItemsChanged = { locationReminders = it }
+                onItemsChanged = { locationReminders = it },
+                registrationStatus = geofenceStatus,
+                registrationError = geofenceErrors
             )
 
             Spacer(Modifier.height(12.dp))
