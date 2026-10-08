@@ -75,7 +75,7 @@ object GeofenceHelper {
      * Registers a geofence and reports back whether it actually succeeded,
      * so the UI can show real status instead of assuming success silently.
      */
-    fun registerGeofence(
+   /* fun registerGeofence(
         context: Context,
         entryId: Long,
         item: LocationReminderItem,
@@ -109,6 +109,85 @@ object GeofenceHelper {
                 .addOnFailureListener { e -> onResult?.invoke(false, e.message ?: "Unknown error") }
         } catch (e: SecurityException) {
             onResult?.invoke(false, "Permission error: ${e.message}")
+        }
+    }*/
+    fun registerGeofence(
+        context: Context,
+        entryId: Long,
+        item: LocationReminderItem,
+        onResult: ((success: Boolean, errorMessage: String?) -> Unit)? = null
+    ) {
+        if (!item.enabled) {
+            removeGeofence(context, entryId, item.id)
+            return
+        }
+        if (!hasLocationPermission(context)) {
+            onResult?.invoke(false, "Location permission not granted")
+            return
+        }
+        if (!hasBackgroundLocationPermission(context)) {
+            // Registration will still be attempted (foreground-only geofencing
+            // is technically allowed), but flag this clearly since it's the
+            // most common reason registration silently never calls back.
+            onResult?.invoke(false, "Background location not granted — go to Settings and allow 'All the time'")
+            return
+        }
+
+        val geofence = Geofence.Builder()
+            .setRequestId(geofenceRequestId(entryId, item.id))
+            .setCircularRegion(item.latitude, item.longitude, item.effectiveRadiusMeters())
+            .setExpirationDuration(Geofence.NEVER_EXPIRE)
+            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER)
+            .build()
+
+        val request = GeofencingRequest.Builder()
+            .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
+            .addGeofence(geofence)
+            .build()
+
+        // A delivered-exactly-once guard — Play Services tasks can, in rare
+        // cases, never call either listener (device Play Services issues,
+        // throttling). Without this, the UI state stays on "Registering…"
+        // forever with no way out.
+        var resolved = false
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val timeoutRunnable = Runnable {
+            if (!resolved) {
+                resolved = true
+                onResult?.invoke(false, "Timed out — Play Services didn't respond. Check Google Play Services is installed and up to date.")
+            }
+        }
+        handler.postDelayed(timeoutRunnable, 10_000)
+
+        try {
+            @Suppress("MissingPermission")
+            client(context).addGeofences(request, pendingIntent(context))
+                .addOnSuccessListener {
+                    if (!resolved) {
+                        resolved = true
+                        handler.removeCallbacks(timeoutRunnable)
+                        onResult?.invoke(true, null)
+                    }
+                }
+                .addOnFailureListener { e ->
+                    if (!resolved) {
+                        resolved = true
+                        handler.removeCallbacks(timeoutRunnable)
+                        onResult?.invoke(false, e.message ?: "Unknown error")
+                    }
+                }
+        } catch (e: SecurityException) {
+            if (!resolved) {
+                resolved = true
+                handler.removeCallbacks(timeoutRunnable)
+                onResult?.invoke(false, "Permission error: ${e.message}")
+            }
+        } catch (e: Exception) {
+            if (!resolved) {
+                resolved = true
+                handler.removeCallbacks(timeoutRunnable)
+                onResult?.invoke(false, "Error: ${e.message}")
+            }
         }
     }
 
