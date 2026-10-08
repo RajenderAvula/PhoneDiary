@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.phonediary.CrashLogger
 import com.example.phonediary.accessibility.BlockedAppsStore
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
@@ -55,8 +57,6 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
-import com.example.phonediary.CrashLogger
-import androidx.compose.foundation.text.selection.SelectionContainer
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -168,6 +168,8 @@ private fun HomeTabContent() {
 
     // ---- Location-based reminders (geofences) for the main composer ----
     var mainLocationReminders by remember { mutableStateOf(listOf<LocationReminderItem>()) }
+    var mainGeofenceStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var mainGeofenceErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     var calendarStatus by remember { mutableStateOf<String?>(null) }
 
@@ -181,6 +183,8 @@ private fun HomeTabContent() {
     var editingRepeatConfig by remember { mutableStateOf(RepeatConfig.NONE) }
     var showEditRepeatDialog by remember { mutableStateOf(false) }
     var editingLocationReminders by remember { mutableStateOf(listOf<LocationReminderItem>()) }
+    var editingGeofenceStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var editingGeofenceErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
@@ -309,6 +313,8 @@ private fun HomeTabContent() {
         noteTags = emptyList()
         mainTagInput = ""
         mainLocationReminders = emptyList()
+        mainGeofenceStatus = emptyMap()
+        mainGeofenceErrors = emptyMap()
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -787,7 +793,9 @@ private fun HomeTabContent() {
         Spacer(Modifier.height(8.dp))
         LocationReminderSection(
             items = mainLocationReminders,
-            onItemsChanged = { mainLocationReminders = it }
+            onItemsChanged = { mainLocationReminders = it },
+            registrationStatus = mainGeofenceStatus,
+            registrationError = mainGeofenceErrors
         )
 
         Spacer(Modifier.height(8.dp))
@@ -848,7 +856,10 @@ private fun HomeTabContent() {
                                 NoteReminderScheduler.scheduleRepeat(context, newId, it)
                             }
                         }
-                        GeofenceHelper.syncGeofencesForEntry(context, newId, mainLocationReminders)
+                        GeofenceHelper.syncGeofencesForEntry(context, newId, mainLocationReminders) { itemId, success, error ->
+                            mainGeofenceStatus = mainGeofenceStatus + (itemId to success)
+                            if (error != null) mainGeofenceErrors = mainGeofenceErrors + (itemId to error)
+                        }
 
                         AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
                             CalendarWriter.refreshEntry(context, it)
@@ -981,7 +992,9 @@ private fun HomeTabContent() {
                             Spacer(Modifier.height(6.dp))
                             LocationReminderSection(
                                 items = editingLocationReminders,
-                                onItemsChanged = { editingLocationReminders = it }
+                                onItemsChanged = { editingLocationReminders = it },
+                                registrationStatus = editingGeofenceStatus,
+                                registrationError = editingGeofenceErrors
                             )
                             Spacer(Modifier.height(4.dp))
                             Text("Attachments:", style = MaterialTheme.typography.bodySmall)
@@ -1020,7 +1033,10 @@ private fun HomeTabContent() {
                                                 NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
                                             }
                                         }
-                                        GeofenceHelper.syncGeofencesForEntry(context, entry.id, editingLocationReminders)
+                                        GeofenceHelper.syncGeofencesForEntry(context, entry.id, editingLocationReminders) { itemId, success, error ->
+                                            editingGeofenceStatus = editingGeofenceStatus + (itemId to success)
+                                            if (error != null) editingGeofenceErrors = editingGeofenceErrors + (itemId to error)
+                                        }
                                         CalendarWriter.refreshEntry(context, updated)
                                         editingEntryId = null
                                         openDate(date)
@@ -1061,6 +1077,8 @@ private fun HomeTabContent() {
                                             editingDueAtMillis = entry.dueAtMillis
                                             editingRepeatConfig = RepeatConfig.fromStored(entry.repeatRule)
                                             editingLocationReminders = LocationReminderListUtil.fromStored(entry.locationReminders)
+                                            editingGeofenceStatus = emptyMap()
+                                            editingGeofenceErrors = emptyMap()
                                         }) { Text("Edit") }
                                         TextButton(onClick = { NoteShareHelper.shareNote(context, entry) }) { Text("📤") }
                                         TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
@@ -1396,6 +1414,7 @@ private fun SettingsPanel(
 
     Column {
         Text("Settings", style = MaterialTheme.typography.titleMedium)
+
         val lastCrash = remember { CrashLogger.readLastCrash(context) }
         if (lastCrash != null) {
             Spacer(Modifier.height(8.dp))
