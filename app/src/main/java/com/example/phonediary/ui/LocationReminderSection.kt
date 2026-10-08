@@ -56,7 +56,7 @@ fun LocationReminderSection(
                 Text(item.label, style = MaterialTheme.typography.bodyMedium)
                 val radiusLabel = if (item.radiusMeters >= 200_000f) "≈unlimited radius" else "${item.radiusMeters.toInt()}m radius"
                 Text(radiusLabel, style = MaterialTheme.typography.labelSmall)
-                if (item.enabled) {
+                /*if (item.enabled) {
                     val registered = registrationStatus[item.id]
                     when (registered) {
                         true -> Text("● Active — will notify on arrival", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
@@ -66,6 +66,25 @@ fun LocationReminderSection(
                             color = MaterialTheme.colorScheme.error
                         )
                         null -> Text("Registering…", style = MaterialTheme.typography.labelSmall)
+                    }
+                }*/
+                if (item.enabled) {
+                    val registered = registrationStatus[item.id]
+                    when (registered) {
+                        true -> Text("● Active — will notify on arrival", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        false -> Text(
+                            "⚠ Not registered: ${registrationError[item.id] ?: "unknown error"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        // No status yet means nothing has attempted registration —
+                        // registration only runs on Save, not while picking the
+                        // location. This is a "not yet" state, not an in-progress one.
+                        null -> Text(
+                            "Will register when you Save",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
