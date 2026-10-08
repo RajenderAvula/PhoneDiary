@@ -33,7 +33,7 @@ object GeofenceHelper {
         }
     }
 
-    fun hasBackgroundLocationPermission(context: Context): Boolean {
+   // fun hasBackgroundLocationPermission(context: Context): Boolean {
 
     fun hasBackgroundLocationPermission(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
