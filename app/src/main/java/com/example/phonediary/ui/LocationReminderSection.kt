@@ -13,10 +13,18 @@ import com.example.phonediary.data.LocationReminderItem
  * own enable/disable toggle, label, radius, and a way to edit (re-pick
  * on the map) or remove it, plus an "Add location" button.
  */
-@Composable
+/*@Composable
 fun LocationReminderSection(
     items: List<LocationReminderItem>,
     onItemsChanged: (List<LocationReminderItem>) -> Unit
+) {*/
+
+@Composable
+fun LocationReminderSection(
+    items: List<LocationReminderItem>,
+    onItemsChanged: (List<LocationReminderItem>) -> Unit,
+    registrationStatus: Map<String, Boolean> = emptyMap(),
+    registrationError: Map<String, String> = emptyMap()
 ) {
     var showPicker by remember { mutableStateOf(false) }
     var editingItem by remember { mutableStateOf<LocationReminderItem?>(null) }
@@ -39,10 +47,27 @@ fun LocationReminderSection(
                 }
             )
             Spacer(Modifier.width(8.dp))
+          /*  Column(modifier = Modifier.weight(1f)) {
+                Text(item.label, style = MaterialTheme.typography.bodyMedium)
+                val radiusLabel = if (item.radiusMeters >= 200_000f) "≈unlimited radius" else "${item.radiusMeters.toInt()}m radius"
+                Text(radiusLabel, style = MaterialTheme.typography.labelSmall)
+            }*/
             Column(modifier = Modifier.weight(1f)) {
                 Text(item.label, style = MaterialTheme.typography.bodyMedium)
                 val radiusLabel = if (item.radiusMeters >= 200_000f) "≈unlimited radius" else "${item.radiusMeters.toInt()}m radius"
                 Text(radiusLabel, style = MaterialTheme.typography.labelSmall)
+                if (item.enabled) {
+                    val registered = registrationStatus[item.id]
+                    when (registered) {
+                        true -> Text("● Active — will notify on arrival", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        false -> Text(
+                            "⚠ Not registered: ${registrationError[item.id] ?: "unknown error"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        null -> Text("Registering…", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
             TextButton(onClick = { editingItem = item; showPicker = true }) { Text("Edit") }
             TextButton(onClick = {
