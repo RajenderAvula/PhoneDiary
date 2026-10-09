@@ -62,15 +62,23 @@ object GeofenceHelper {
     private fun client(context: Context): GeofencingClient = LocationServices.getGeofencingClient(context)
 
     /**
-     * Registers a geofence and reports back whether it actually succeeded.
-     * Every outcome is also persisted to GeofenceStatusStore so the UI shows
-     * real status after reopening a note or restarting the app.
-     * A timeout guarantees a result is always delivered.
+     * Registers a geofence and reports whether it actually succeeded. Every
+     * outcome is persisted to GeofenceStatusStore, and a timeout guarantees a
+     * result is always delivered.
+     *
+     * fireIfAlreadyInside: true for explicit user actions (save / toggle on), so
+     * you're notified right away if you're already in the area. false for
+     * automatic re-registration, otherwise every app open would re-notify (and
+     * restart the repeat chain) while you stand inside a zone.
+     *
+     * EXIT is only watched when the location has a repeat, so the repeat alarm
+     * can be stopped when you leave.
      */
     fun registerGeofence(
         context: Context,
         entryId: Long,
         item: LocationReminderItem,
+        fireIfAlreadyInside: Boolean = true,
         onResult: ((success: Boolean, errorMessage: String?) -> Unit)? = null
     ) {
         if (!item.enabled) {
@@ -96,15 +104,21 @@ object GeofenceHelper {
             return
         }
 
+        val transitions = if (item.hasRepeat()) {
+            Geofence.GEOFENCE_TRANSITION_ENTER or Geofence.GEOFENCE_TRANSITION_EXIT
+        } else {
+            Geofence.GEOFENCE_TRANSITION_ENTER
+        }
+
         val geofence = Geofence.Builder()
             .setRequestId(geofenceRequestId(entryId, item.id))
             .setCircularRegion(item.latitude, item.longitude, item.effectiveRadiusMeters())
             .setExpirationDuration(Geofence.NEVER_EXPIRE)
-            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER)
+            .setTransitionTypes(transitions)
             .build()
 
         val request = GeofencingRequest.Builder()
-            .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
+            .setInitialTrigger(if (fireIfAlreadyInside) GeofencingRequest.INITIAL_TRIGGER_ENTER else 0)
             .addGeofence(geofence)
             .build()
 
@@ -151,28 +165,34 @@ object GeofenceHelper {
         }
     }
 
+    /** Removes the geofence, its stored status, and any running repeat alarm for this location. */
     fun removeGeofence(context: Context, entryId: Long, locationId: String) {
         client(context).removeGeofences(listOf(geofenceRequestId(entryId, locationId)))
         GeofenceStatusStore.clear(context, entryId, locationId)
+        LocationRepeatScheduler.cancel(context, entryId, locationId)
     }
 
-    /** Removes every geofence belonging to a note (call on delete, or when locations were removed). */
+    /** Removes every geofence (and repeat alarm) for the given locations of a note. */
     fun removeAllGeofencesForEntry(context: Context, entryId: Long, items: List<LocationReminderItem>) {
         if (items.isEmpty()) return
         client(context).removeGeofences(items.map { geofenceRequestId(entryId, it.id) })
-        items.forEach { GeofenceStatusStore.clear(context, entryId, it.id) }
+        items.forEach {
+            GeofenceStatusStore.clear(context, entryId, it.id)
+            LocationRepeatScheduler.cancel(context, entryId, it.id)
+        }
     }
 
-    /** Syncs a note's full location-reminder list: registers enabled ones, removes disabled ones. */
+    /** Syncs a note's location reminders: registers enabled ones, removes disabled ones. */
     fun syncGeofencesForEntry(
         context: Context,
         entryId: Long,
         items: List<LocationReminderItem>,
+        fireIfAlreadyInside: Boolean = true,
         onResult: ((itemId: String, success: Boolean, errorMessage: String?) -> Unit)? = null
     ) {
         items.forEach { item ->
             if (item.enabled) {
-                registerGeofence(context, entryId, item) { success, error ->
+                registerGeofence(context, entryId, item, fireIfAlreadyInside) { success, error ->
                     onResult?.invoke(item.id, success, error)
                 }
             } else {
@@ -182,18 +202,17 @@ object GeofenceHelper {
     }
 
     /**
-     * Re-registers every enabled location reminder across every note.
-     * Geofences do NOT survive a device reboot, a force-stop, or a Play
-     * Services reset, and nothing tells us they were silently dropped —
-     * so this runs on every app start and when device Location is turned on.
+     * Re-registers every enabled location reminder across every note. Geofences
+     * don't survive a reboot, force-stop, or Play Services reset. Runs on app
+     * start and when device Location comes back on, without re-firing for zones
+     * you're already standing in.
      */
     suspend fun resyncAllEntries(context: Context) {
         val dao = AppDatabase.getInstance(context).logEntryDao()
-        val allEntries = dao.getAllEntries()
-        allEntries.forEach { entry ->
+        dao.getAllEntries().forEach { entry ->
             val items = LocationReminderListUtil.fromStored(entry.locationReminders)
             if (items.any { it.enabled }) {
-                syncGeofencesForEntry(context, entry.id, items)
+                syncGeofencesForEntry(context, entry.id, items, fireIfAlreadyInside = false)
             }
         }
     }
