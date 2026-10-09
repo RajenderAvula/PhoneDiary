@@ -33,6 +33,7 @@ import com.example.phonediary.files.StreamingSpeechHelper
 import com.example.phonediary.files.TextScanHelper
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.GeofenceHelper
+import com.example.phonediary.reminders.GeofenceStatusStore
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -64,8 +65,8 @@ fun FullScreenNoteEditor(
     initialRepeatRule: String,
     initialNoteDateTimeMillis: Long?,
     initialLocationReminders: List<LocationReminderItem> = emptyList(),
-    highlightQuery: String? = null,
     existingEntryId: Long? = null,
+    highlightQuery: String? = null,
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -98,8 +99,26 @@ fun FullScreenNoteEditor(
     var noteDateTimeMillis by remember { mutableStateOf(initialNoteDateTimeMillis) }
 
     var locationReminders by remember { mutableStateOf(initialLocationReminders) }
-    var geofenceStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
-    var geofenceErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // Initialised from the persisted store so reopening a note shows real
+    // registration status instead of resetting to "unknown".
+    var geofenceStatus by remember {
+        mutableStateOf(
+            initialLocationReminders.mapNotNull { item ->
+                existingEntryId?.let { id ->
+                    GeofenceStatusStore.getStatus(context, id, item.id)?.let { item.id to it }
+                }
+            }.toMap()
+        )
+    }
+    var geofenceErrors by remember {
+        mutableStateOf(
+            initialLocationReminders.mapNotNull { item ->
+                existingEntryId?.let { id ->
+                    GeofenceStatusStore.getError(context, id, item.id)?.let { item.id to it }
+                }
+            }.toMap()
+        )
+    }
 
     var isOneShotListening by remember { mutableStateOf(false) }
     var isStreamingListening by remember { mutableStateOf(false) }
@@ -539,12 +558,6 @@ fun FullScreenNoteEditor(
             }
 
             Spacer(Modifier.height(12.dp))
-         /*   LocationReminderSection(
-                items = locationReminders,
-                onItemsChanged = { locationReminders = it },
-                registrationStatus = geofenceStatus,
-                registrationError = geofenceErrors
-            )*/
             LocationReminderSection(
                 items = locationReminders,
                 onItemsChanged = { locationReminders = it },
@@ -552,11 +565,22 @@ fun FullScreenNoteEditor(
                 registrationError = geofenceErrors,
                 onToggle = { item ->
                     if (existingEntryId != null) {
-                        GeofenceHelper.registerGeofence(context, existingEntryId, item) { success, error ->
-                            geofenceStatus = geofenceStatus + (item.id to success)
-                            if (error != null) geofenceErrors = geofenceErrors + (item.id to error)
+                        if (item.enabled) {
+                            GeofenceHelper.registerGeofence(context, existingEntryId, item) { success, error ->
+                                geofenceStatus = geofenceStatus + (item.id to success)
+                                geofenceErrors = if (error != null) {
+                                    geofenceErrors + (item.id to error)
+                                } else {
+                                    geofenceErrors - item.id
+                                }
+                            }
+                        } else {
+                            GeofenceHelper.removeGeofence(context, existingEntryId, item.id)
+                            geofenceStatus = geofenceStatus - item.id
+                            geofenceErrors = geofenceErrors - item.id
                         }
                     } else {
+                        // New note: no id yet, so nothing to register until Save.
                         geofenceStatus = geofenceStatus - item.id
                         geofenceErrors = geofenceErrors - item.id
                     }
