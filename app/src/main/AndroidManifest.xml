@@ -69,6 +69,13 @@
         <receiver
             android:name=".reminders.GeofenceBroadcastReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".reminders.LocationProviderChangeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.location.PROVIDERS_CHANGED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>
