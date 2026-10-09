@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.data.LocationReminderItem
 import com.example.phonediary.files.AudioRecorderHelper
@@ -66,6 +67,14 @@ fun FullScreenNoteEditor(
     initialNoteDateTimeMillis: Long?,
     initialLocationReminders: List<LocationReminderItem> = emptyList(),
     existingEntryId: Long? = null,
+    /**
+     * True when this editor is editing the note that belongs to one location
+     * reminder. The location itself is the trigger, so note date/time,
+     * Reminder, Due and nested location reminders are hidden, and Repeat
+     * means "repeat while I'm inside this location".
+     */
+    isLocationNote: Boolean = false,
+    locationNoteName: String = "",
     highlightQuery: String? = null,
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
@@ -309,7 +318,13 @@ fun FullScreenNoteEditor(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Note") },
+                title = {
+                    Text(
+                        if (isLocationNote) "Note: ${locationNoteName.ifBlank { "location" }}" else "Note",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 navigationIcon = {
                     TextButton(onClick = onCancel) { Text("✕ Cancel") }
                 },
@@ -373,22 +388,29 @@ fun FullScreenNoteEditor(
                 value = title,
                 onValueChange = { title = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Note title (optional) — shown in Calendar & searchable") },
+                placeholder = {
+                    Text(
+                        if (isLocationNote) "Title shown in the notification (optional)"
+                        else "Note title (optional) — shown in Calendar & searchable"
+                    )
+                },
                 singleLine = true
             )
 
-            Spacer(Modifier.height(8.dp))
-            Text("Note date & time", style = MaterialTheme.typography.bodySmall)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = { DateTimePickerUtil.pick(context) { picked -> noteDateTimeMillis = picked } }
-                ) {
-                    Text(noteDateTimeMillis?.let { dateTimeFormat.format(it) } ?: "Set date & time (defaults to now)")
-                }
-                if (noteDateTimeMillis != null) {
-                    Spacer(Modifier.width(6.dp))
-                    OutlinedButton(onClick = { noteDateTimeMillis = null }) { Text("✕") }
+            if (!isLocationNote) {
+                Spacer(Modifier.height(8.dp))
+                Text("Note date & time", style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { DateTimePickerUtil.pick(context) { picked -> noteDateTimeMillis = picked } }
+                    ) {
+                        Text(noteDateTimeMillis?.let { dateTimeFormat.format(it) } ?: "Set date & time (defaults to now)")
+                    }
+                    if (noteDateTimeMillis != null) {
+                        Spacer(Modifier.width(6.dp))
+                        OutlinedButton(onClick = { noteDateTimeMillis = null }) { Text("✕") }
+                    }
                 }
             }
 
@@ -510,33 +532,38 @@ fun FullScreenNoteEditor(
             }
 
             Spacer(Modifier.height(12.dp))
-            Text("Schedule", style = MaterialTheme.typography.titleSmall)
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = { DateTimePickerUtil.pick(context) { picked -> reminderAtMillis = picked } }
-                ) {
-                    Text(reminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
+            Text(
+                if (isLocationNote) "Repeat while here" else "Schedule",
+                style = MaterialTheme.typography.titleSmall
+            )
+            if (!isLocationNote) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { DateTimePickerUtil.pick(context) { picked -> reminderAtMillis = picked } }
+                    ) {
+                        Text(reminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
+                    }
+                    if (reminderAtMillis != null) {
+                        Spacer(Modifier.width(4.dp))
+                        OutlinedButton(onClick = { reminderAtMillis = null }) { Text("✕") }
+                    }
                 }
-                if (reminderAtMillis != null) {
-                    Spacer(Modifier.width(4.dp))
-                    OutlinedButton(onClick = { reminderAtMillis = null }) { Text("✕") }
+                Spacer(Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { DateTimePickerUtil.pick(context) { picked -> dueAtMillis = picked } }
+                    ) {
+                        Text(dueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
+                    }
+                    if (dueAtMillis != null) {
+                        Spacer(Modifier.width(4.dp))
+                        OutlinedButton(onClick = { dueAtMillis = null }) { Text("✕") }
+                    }
                 }
+                Spacer(Modifier.height(6.dp))
             }
-            Spacer(Modifier.height(6.dp))
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = { DateTimePickerUtil.pick(context) { picked -> dueAtMillis = picked } }
-                ) {
-                    Text(dueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
-                }
-                if (dueAtMillis != null) {
-                    Spacer(Modifier.width(4.dp))
-                    OutlinedButton(onClick = { dueAtMillis = null }) { Text("✕") }
-                }
-            }
-            Spacer(Modifier.height(6.dp))
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
@@ -549,6 +576,12 @@ fun FullScreenNoteEditor(
                     OutlinedButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
                 }
             }
+            if (isLocationNote) {
+                Text(
+                    "Notifies again on this schedule while you stay inside this location's area. Stops when you leave. Takes effect when the parent note is saved.",
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
             if (showRepeatDialogFS) {
                 RepeatPickerDialog(
                     initial = RepeatConfig.fromStored(repeatRule),
@@ -557,35 +590,37 @@ fun FullScreenNoteEditor(
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
-            LocationReminderSection(
-                items = locationReminders,
-                onItemsChanged = { locationReminders = it },
-                registrationStatus = geofenceStatus,
-                registrationError = geofenceErrors,
-                onToggle = { item ->
-                    if (existingEntryId != null) {
-                        if (item.enabled) {
-                            GeofenceHelper.registerGeofence(context, existingEntryId, item) { success, error ->
-                                geofenceStatus = geofenceStatus + (item.id to success)
-                                geofenceErrors = if (error != null) {
-                                    geofenceErrors + (item.id to error)
-                                } else {
-                                    geofenceErrors - item.id
+            if (!isLocationNote) {
+                Spacer(Modifier.height(12.dp))
+                LocationReminderSection(
+                    items = locationReminders,
+                    onItemsChanged = { locationReminders = it },
+                    registrationStatus = geofenceStatus,
+                    registrationError = geofenceErrors,
+                    onToggle = { item ->
+                        if (existingEntryId != null) {
+                            if (item.enabled) {
+                                GeofenceHelper.registerGeofence(context, existingEntryId, item) { success, error ->
+                                    geofenceStatus = geofenceStatus + (item.id to success)
+                                    geofenceErrors = if (error != null) {
+                                        geofenceErrors + (item.id to error)
+                                    } else {
+                                        geofenceErrors - item.id
+                                    }
                                 }
+                            } else {
+                                GeofenceHelper.removeGeofence(context, existingEntryId, item.id)
+                                geofenceStatus = geofenceStatus - item.id
+                                geofenceErrors = geofenceErrors - item.id
                             }
                         } else {
-                            GeofenceHelper.removeGeofence(context, existingEntryId, item.id)
+                            // New note: no id yet, so nothing to register until Save.
                             geofenceStatus = geofenceStatus - item.id
                             geofenceErrors = geofenceErrors - item.id
                         }
-                    } else {
-                        // New note: no id yet, so nothing to register until Save.
-                        geofenceStatus = geofenceStatus - item.id
-                        geofenceErrors = geofenceErrors - item.id
                     }
-                }
-            )
+                )
+            }
 
             Spacer(Modifier.height(12.dp))
             Text("Attachments", style = MaterialTheme.typography.titleSmall)
