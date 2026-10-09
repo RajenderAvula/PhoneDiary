@@ -66,10 +66,16 @@ object GeofenceHelper {
      * outcome is persisted to GeofenceStatusStore, and a timeout guarantees a
      * result is always delivered.
      *
-     * fireIfAlreadyInside: true for explicit user actions (save / toggle on), so
-     * you're notified right away if you're already in the area. false for
-     * automatic re-registration, otherwise every app open would re-notify (and
-     * restart the repeat chain) while you stand inside a zone.
+     * fireIfAlreadyInside: true for explicit user actions (save / toggle on),
+     * false for automatic re-registration, otherwise every app open would
+     * re-notify while you stand inside a zone.
+     *
+     * Why remove-then-add for locations with a repeat: re-adding a geofence
+     * under an ID that already exists replaces it, but Play Services keeps its
+     * "already inside" state for that ID and does not send a fresh ENTER. That
+     * is why a repeat only started firing after toggling the location off and
+     * on (which removes the ID first). Removing first on explicit saves gives
+     * the same result without the toggle.
      *
      * EXIT is only watched when the location has a repeat, so the repeat alarm
      * can be stopped when you leave.
@@ -84,6 +90,11 @@ object GeofenceHelper {
         if (!item.enabled) {
             removeGeofence(context, entryId, item.id)
             return
+        }
+
+        // Repeat was cleared: make sure no old repeat alarm keeps running.
+        if (!item.hasRepeat()) {
+            LocationRepeatScheduler.cancel(context, entryId, item.id)
         }
 
         fun fail(message: String) {
@@ -104,6 +115,8 @@ object GeofenceHelper {
             return
         }
 
+        val requestId = geofenceRequestId(entryId, item.id)
+
         val transitions = if (item.hasRepeat()) {
             Geofence.GEOFENCE_TRANSITION_ENTER or Geofence.GEOFENCE_TRANSITION_EXIT
         } else {
@@ -111,7 +124,7 @@ object GeofenceHelper {
         }
 
         val geofence = Geofence.Builder()
-            .setRequestId(geofenceRequestId(entryId, item.id))
+            .setRequestId(requestId)
             .setCircularRegion(item.latitude, item.longitude, item.effectiveRadiusMeters())
             .setExpirationDuration(Geofence.NEVER_EXPIRE)
             .setTransitionTypes(transitions)
@@ -132,36 +145,49 @@ object GeofenceHelper {
         }
         handler.postDelayed(timeoutRunnable, REGISTRATION_TIMEOUT_MILLIS)
 
-        try {
-            @Suppress("MissingPermission")
-            client(context).addGeofences(request, pendingIntent(context))
-                .addOnSuccessListener {
-                    if (!resolved) {
-                        resolved = true
-                        handler.removeCallbacks(timeoutRunnable)
-                        GeofenceStatusStore.setSuccess(context, entryId, item.id)
-                        onResult?.invoke(true, null)
+        fun addNow() {
+            try {
+                @Suppress("MissingPermission")
+                client(context).addGeofences(request, pendingIntent(context))
+                    .addOnSuccessListener {
+                        if (!resolved) {
+                            resolved = true
+                            handler.removeCallbacks(timeoutRunnable)
+                            GeofenceStatusStore.setSuccess(context, entryId, item.id)
+                            onResult?.invoke(true, null)
+                        }
                     }
-                }
-                .addOnFailureListener { e ->
-                    if (!resolved) {
-                        resolved = true
-                        handler.removeCallbacks(timeoutRunnable)
-                        fail(e.message ?: "Unknown error")
+                    .addOnFailureListener { e ->
+                        if (!resolved) {
+                            resolved = true
+                            handler.removeCallbacks(timeoutRunnable)
+                            fail(e.message ?: "Unknown error")
+                        }
                     }
+            } catch (e: SecurityException) {
+                if (!resolved) {
+                    resolved = true
+                    handler.removeCallbacks(timeoutRunnable)
+                    fail("Permission error: ${e.message}")
                 }
-        } catch (e: SecurityException) {
-            if (!resolved) {
-                resolved = true
-                handler.removeCallbacks(timeoutRunnable)
-                fail("Permission error: ${e.message}")
+            } catch (e: Exception) {
+                if (!resolved) {
+                    resolved = true
+                    handler.removeCallbacks(timeoutRunnable)
+                    fail("Error: ${e.message}")
+                }
             }
-        } catch (e: Exception) {
-            if (!resolved) {
-                resolved = true
-                handler.removeCallbacks(timeoutRunnable)
-                fail("Error: ${e.message}")
+        }
+
+        if (fireIfAlreadyInside && item.hasRepeat()) {
+            try {
+                client(context).removeGeofences(listOf(requestId))
+                    .addOnCompleteListener { addNow() }
+            } catch (e: Exception) {
+                addNow()
             }
+        } else {
+            addNow()
         }
     }
 
