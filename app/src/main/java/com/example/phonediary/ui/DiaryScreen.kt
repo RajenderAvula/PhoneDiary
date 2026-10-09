@@ -58,7 +58,9 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
-
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
@@ -1418,8 +1420,310 @@ private fun CalendarMonthView(
         }
     }
 }
-
 @Composable
+private fun SettingsPanel(
+    context: Context,
+    blockedApps: Set<String>,
+    newBlockedPackage: String,
+    onNewBlockedPackageChange: (String) -> Unit,
+    onAddBlocked: () -> Unit,
+    onRemoveBlocked: (String) -> Unit,
+    currentTheme: AppTheme,
+    onThemeChange: (AppTheme) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+
+    // Bumped whenever the app resumes or a system settings screen returns,
+    // forcing every permission/status check below to re-run.
+    var refreshTick by remember { mutableStateOf(0) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshTick++
+                // Coming back from system settings: re-register geofences now
+                // that permission / device Location may have changed.
+                scope.launch { GeofenceHelper.resyncAllEntries(context) }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // All system-settings screens open through this launcher so Back returns
+    // to the app (rather than the home screen) and status refreshes on return.
+    val settingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { refreshTick++ }
+
+    val hasUsagePermission = remember(refreshTick) { UsageStatsCollector(context).hasUsagePermission() }
+    val hasCalendarPermission = remember(refreshTick) { CalendarWriter.hasCalendarPermission(context) }
+
+    val canScheduleExactAlarms = remember(refreshTick) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            am.canScheduleExactAlarms()
+        } else true
+    }
+
+    var backupStatus by remember { mutableStateOf<String?>(null) }
+    var isBackingUp by remember { mutableStateOf(false) }
+    var lastBackupUri by remember { mutableStateOf<Uri?>(null) }
+    var lastBackupName by remember { mutableStateOf<String?>(null) }
+
+    var restoreStatus by remember { mutableStateOf<String?>(null) }
+    var isRestoring by remember { mutableStateOf(false) }
+    var confirmRestoreUri by remember { mutableStateOf<Uri?>(null) }
+
+    val restorePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) confirmRestoreUri = uri
+    }
+
+    Column {
+        Text("Settings", style = MaterialTheme.typography.titleMedium)
+
+        val lastCrash = remember(refreshTick) { CrashLogger.readLastCrash(context) }
+        if (lastCrash != null) {
+            Spacer(Modifier.height(8.dp))
+            Divider()
+            Spacer(Modifier.height(8.dp))
+            Text("Last crash log", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+            var expanded by remember { mutableStateOf(false) }
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Hide" else "Show crash details")
+            }
+            if (expanded) {
+                SelectionContainer {
+                    Text(lastCrash, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Row {
+                OutlinedButton(onClick = {
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "Phone Diary crash log")
+                        putExtra(Intent.EXTRA_TEXT, lastCrash)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share crash log"))
+                }) { Text("Share") }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = {
+                    CrashLogger.clearLastCrash(context)
+                    refreshTick++
+                }) { Text("Clear") }
+            }
+        }
+
+        // ---- Notifications ----
+        Spacer(Modifier.height(8.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Notifications", style = MaterialTheme.typography.titleSmall)
+        Text(
+            if (canScheduleExactAlarms) "Exact alarms: allowed ✓" else "Exact alarms: NOT allowed — reminders may not fire on time",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (!canScheduleExactAlarms && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Button(onClick = {
+                settingsLauncher.launch(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
+            }) {
+                Text("Allow exact alarms")
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Button(onClick = {
+            settingsLauncher.launch(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                }
+            )
+        }) {
+            Text("Check notification settings")
+        }
+        Text(
+            "If reminders still don't fire after allowing both, some phone brands (Xiaomi, Oppo, etc.) require 'Autostart' or battery-saver exemption too.",
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        // ---- Location reminders ----
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Location reminders", style = MaterialTheme.typography.titleSmall)
+
+        val hasBgLocation = remember(refreshTick) { GeofenceHelper.hasBackgroundLocationPermission(context) }
+        Text(
+            if (hasBgLocation) "Background location: granted ✓" else "Background location: NOT granted — location reminders won't fire while the app is closed",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (!hasBgLocation) {
+            Button(onClick = {
+                settingsLauncher.launch(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                )
+            }) { Text("Grant background location") }
+            Text(
+                "Open the app's permission page and set Location to 'Allow all the time'.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        val locationServiceOn = remember(refreshTick) { GeofenceHelper.isLocationServiceEnabled(context) }
+        Text(
+            if (locationServiceOn) "Device Location: on ✓" else "Device Location: OFF — location reminders can't work until it's turned on",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (!locationServiceOn) {
+            Button(onClick = {
+                settingsLauncher.launch(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            }) { Text("Turn on Location") }
+        }
+        Spacer(Modifier.height(4.dp))
+        OutlinedButton(onClick = {
+            scope.launch {
+                GeofenceHelper.resyncAllEntries(context)
+                refreshTick++
+            }
+        }) { Text("Re-register all location reminders") }
+
+        // ---- Theme ----
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Theme", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(selected = currentTheme == AppTheme.DARK, onClick = { onThemeChange(AppTheme.DARK) }, label = { Text("Dark") })
+            Spacer(Modifier.width(8.dp))
+            FilterChip(selected = currentTheme == AppTheme.COLORFUL, onClick = { onThemeChange(AppTheme.COLORFUL) }, label = { Text("Colourful") })
+        }
+
+        // ---- Backup & Restore ----
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Backup & Restore", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Backup saves all entries and files into one dated zip, references it in Calendar, and can email it to you.",
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        Spacer(Modifier.height(4.dp))
+        Button(
+            enabled = !isBackingUp,
+            onClick = {
+                isBackingUp = true
+                backupStatus = null
+                scope.launch {
+                    val result = BackupHelper.createBackup(context)
+                    if (result != null) {
+                        backupStatus = "Saved: ${result.fileName} ✓ (also recorded in Calendar)"
+                        lastBackupUri = result.uri
+                        lastBackupName = result.fileName
+                    } else {
+                        backupStatus = "Backup failed"
+                    }
+                    isBackingUp = false
+                }
+            }
+        ) {
+            Text(if (isBackingUp) "Backing up…" else "Backup now")
+        }
+        backupStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        if (lastBackupUri != null && lastBackupName != null) {
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = { EmailBackupHelper.shareBackupViaEmail(context, lastBackupUri!!, lastBackupName!!) }) {
+                Text("Email latest backup")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            enabled = !isRestoring,
+            onClick = { restorePickerLauncher.launch(arrayOf("application/zip", "*/*")) }
+        ) {
+            Text(if (isRestoring) "Restoring…" else "Restore from backup zip")
+        }
+        Text("Pick a .zip from Downloads, or one you saved from a Gmail attachment.", style = MaterialTheme.typography.bodySmall)
+        restoreStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        confirmRestoreUri?.let { uri ->
+            ConfirmDeleteDialog(
+                message = "Restoring will add all entries from this backup into your current data. Continue?",
+                onConfirm = {
+                    confirmRestoreUri = null
+                    isRestoring = true
+                    restoreStatus = null
+                    scope.launch {
+                        val result = RestoreHelper.restoreFromZip(context, uri)
+                        restoreStatus = if (result != null) {
+                            "Restored ${result.entriesRestored} entries, ${result.attachmentsRestored} files ✓"
+                        } else {
+                            "Restore failed — make sure you picked a Phone Diary backup zip"
+                        }
+                        isRestoring = false
+                    }
+                },
+                onDismiss = { confirmRestoreUri = null }
+            )
+        }
+
+        // ---- Usage access / Calendar / Accessibility ----
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+
+        Text(if (hasUsagePermission) "Usage access: granted" else "Usage access: not granted")
+        if (!hasUsagePermission) {
+            Button(onClick = {
+                settingsLauncher.launch(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            }) { Text("Grant usage access") }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text(if (hasCalendarPermission) "Calendar access: granted" else "Calendar access: not granted")
+
+        Spacer(Modifier.height(8.dp))
+        Text("Screen-content logging (Accessibility)")
+        Button(onClick = {
+            settingsLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }) { Text("Open Accessibility settings") }
+        Text("Find 'Phone Diary' in the list and turn it on there.", style = MaterialTheme.typography.bodySmall)
+
+        // ---- Blocked apps ----
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Blocked apps (never logged)", style = MaterialTheme.typography.titleSmall)
+        blockedApps.forEach { pkg ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(pkg, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { onRemoveBlocked(pkg) }) { Text("Remove") }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = newBlockedPackage,
+                onValueChange = onNewBlockedPackageChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("e.g. com.bank.app") }
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = onAddBlocked) { Text("Block") }
+        }
+    }
+}
+
+/*@Composable
 private fun SettingsPanel(
     context: Context,
     blockedApps: Set<String>,
@@ -1678,4 +1982,4 @@ private fun SettingsPanel(
             Button(onClick = onAddBlocked) { Text("Block") }
         }
     }
-}
+}*/
