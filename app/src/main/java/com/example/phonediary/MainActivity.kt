@@ -26,6 +26,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLogger.install(this)
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            com.example.phonediary.reminders.GeofenceHelper.resyncAllEntries(applicationContext)
+        }
 
         val permissions = mutableListOf(
             Manifest.permission.READ_CALENDAR,
