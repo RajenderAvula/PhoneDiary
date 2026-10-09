@@ -49,6 +49,7 @@ import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.GeofenceHelper
+import com.example.phonediary.reminders.GeofenceStatusStore
 import com.example.phonediary.reminders.NoteReminderScheduler
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
@@ -791,20 +792,14 @@ private fun HomeTabContent() {
         }
 
         Spacer(Modifier.height(8.dp))
-        /*LocationReminderSection(
-            items = mainLocationReminders,
-            onItemsChanged = { mainLocationReminders = it },
-            registrationStatus = mainGeofenceStatus,
-            registrationError = mainGeofenceErrors
-        )*/
         LocationReminderSection(
             items = mainLocationReminders,
             onItemsChanged = { mainLocationReminders = it },
             registrationStatus = mainGeofenceStatus,
             registrationError = mainGeofenceErrors,
             onToggle = { item ->
-                // Main composer note has no id yet until Save — nothing to
-                // register against until then, so just clear stale status.
+                // The note has no id until it's saved, so there's nothing to
+                // register against yet — just clear any stale status.
                 mainGeofenceStatus = mainGeofenceStatus - item.id
                 mainGeofenceErrors = mainGeofenceErrors - item.id
             }
@@ -868,10 +863,9 @@ private fun HomeTabContent() {
                                 NoteReminderScheduler.scheduleRepeat(context, newId, it)
                             }
                         }
-                        GeofenceHelper.syncGeofencesForEntry(context, newId, mainLocationReminders) { itemId, success, error ->
-                            mainGeofenceStatus = mainGeofenceStatus + (itemId to success)
-                            if (error != null) mainGeofenceErrors = mainGeofenceErrors + (itemId to error)
-                        }
+                        // Status is persisted by GeofenceHelper itself, so the form
+                        // being reset below doesn't lose it.
+                        GeofenceHelper.syncGeofencesForEntry(context, newId, mainLocationReminders)
 
                         AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
                             CalendarWriter.refreshEntry(context, it)
@@ -1002,22 +996,25 @@ private fun HomeTabContent() {
                                 )
                             }
                             Spacer(Modifier.height(6.dp))
-                           /* LocationReminderSection(
-                                items = editingLocationReminders,
-                                onItemsChanged = { editingLocationReminders = it },
-                                registrationStatus = editingGeofenceStatus,
-                                registrationError = editingGeofenceErrors
-                            )*/
-
                             LocationReminderSection(
                                 items = editingLocationReminders,
                                 onItemsChanged = { editingLocationReminders = it },
                                 registrationStatus = editingGeofenceStatus,
                                 registrationError = editingGeofenceErrors,
                                 onToggle = { item ->
-                                    GeofenceHelper.registerGeofence(context, entry.id, item) { success, error ->
-                                        editingGeofenceStatus = editingGeofenceStatus + (item.id to success)
-                                        if (error != null) editingGeofenceErrors = editingGeofenceErrors + (item.id to error)
+                                    if (item.enabled) {
+                                        GeofenceHelper.registerGeofence(context, entry.id, item) { success, error ->
+                                            editingGeofenceStatus = editingGeofenceStatus + (item.id to success)
+                                            editingGeofenceErrors = if (error != null) {
+                                                editingGeofenceErrors + (item.id to error)
+                                            } else {
+                                                editingGeofenceErrors - item.id
+                                            }
+                                        }
+                                    } else {
+                                        GeofenceHelper.removeGeofence(context, entry.id, item.id)
+                                        editingGeofenceStatus = editingGeofenceStatus - item.id
+                                        editingGeofenceErrors = editingGeofenceErrors - item.id
                                     }
                                 }
                             )
@@ -1058,9 +1055,19 @@ private fun HomeTabContent() {
                                                 NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
                                             }
                                         }
+                                        // Remove geofences for any location the user deleted with ✕.
+                                        val previousItems = LocationReminderListUtil.fromStored(entry.locationReminders)
+                                        val remainingIds = editingLocationReminders.map { it.id }.toSet()
+                                        val removedItems = previousItems.filter { it.id !in remainingIds }
+                                        GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, removedItems)
+
                                         GeofenceHelper.syncGeofencesForEntry(context, entry.id, editingLocationReminders) { itemId, success, error ->
                                             editingGeofenceStatus = editingGeofenceStatus + (itemId to success)
-                                            if (error != null) editingGeofenceErrors = editingGeofenceErrors + (itemId to error)
+                                            editingGeofenceErrors = if (error != null) {
+                                                editingGeofenceErrors + (itemId to error)
+                                            } else {
+                                                editingGeofenceErrors - itemId
+                                            }
                                         }
                                         CalendarWriter.refreshEntry(context, updated)
                                         editingEntryId = null
@@ -1101,9 +1108,14 @@ private fun HomeTabContent() {
                                             editingReminderAtMillis = entry.reminderAtMillis
                                             editingDueAtMillis = entry.dueAtMillis
                                             editingRepeatConfig = RepeatConfig.fromStored(entry.repeatRule)
-                                            editingLocationReminders = LocationReminderListUtil.fromStored(entry.locationReminders)
-                                            editingGeofenceStatus = emptyMap()
-                                            editingGeofenceErrors = emptyMap()
+                                            val locItems = LocationReminderListUtil.fromStored(entry.locationReminders)
+                                            editingLocationReminders = locItems
+                                            editingGeofenceStatus = locItems.mapNotNull { item ->
+                                                GeofenceStatusStore.getStatus(context, entry.id, item.id)?.let { item.id to it }
+                                            }.toMap()
+                                            editingGeofenceErrors = locItems.mapNotNull { item ->
+                                                GeofenceStatusStore.getError(context, entry.id, item.id)?.let { item.id to it }
+                                            }.toMap()
                                         }) { Text("Edit") }
                                         TextButton(onClick = { NoteShareHelper.shareNote(context, entry) }) { Text("📤") }
                                         TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
@@ -1219,6 +1231,7 @@ private fun HomeTabContent() {
                 initialRepeatRule = initialRepeat,
                 initialNoteDateTimeMillis = initialNoteDateTime,
                 initialLocationReminders = initialLocReminders,
+                existingEntryId = editingId,
                 highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
                 onSave = { result ->
                     if (editingId == null) {
@@ -1299,6 +1312,12 @@ private fun HomeTabContent() {
                                         NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
                                     }
                                 }
+                                // Remove geofences for any location the user deleted with ✕.
+                                val previousItems = LocationReminderListUtil.fromStored(entry.locationReminders)
+                                val remainingIds = result.locationReminders.map { it.id }.toSet()
+                                val removedItems = previousItems.filter { it.id !in remainingIds }
+                                GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, removedItems)
+
                                 GeofenceHelper.syncGeofencesForEntry(context, entry.id, result.locationReminders)
                                 CalendarWriter.refreshEntry(context, updated)
                                 loadAllTags()
@@ -1522,6 +1541,20 @@ private fun SettingsPanel(
                 style = MaterialTheme.typography.bodySmall
             )
         }
+        val locationServiceOn = remember { GeofenceHelper.isLocationServiceEnabled(context) }
+        Text(
+            if (locationServiceOn) "Device Location: on ✓" else "Device Location: OFF — location reminders can't work until it's turned on",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (!locationServiceOn) {
+            Button(onClick = {
+                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            }) { Text("Turn on Location") }
+        }
+        Spacer(Modifier.height(4.dp))
+        OutlinedButton(onClick = {
+            scope.launch { GeofenceHelper.resyncAllEntries(context) }
+        }) { Text("Re-register all location reminders") }
 
         Spacer(Modifier.height(12.dp))
         Divider()
