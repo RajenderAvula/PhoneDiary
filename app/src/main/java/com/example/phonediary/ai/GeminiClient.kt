@@ -10,7 +10,7 @@ import java.net.URL
 object GeminiClient {
 
     /** If Google reports "model not found", change this to a model name listed in Google AI Studio. */
-    const val MODEL = "gemini-2.5-flash"
+    const val MODEL = "gemini-1.5-flash"
 
     private const val ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent"
 
