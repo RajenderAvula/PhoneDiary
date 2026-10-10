@@ -1,23 +1,21 @@
 package com.example.phonediary.ui
 
-import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.dp
-import androidx.compose.runtime.remember
 import androidx.compose.ui.text.withStyle
+import com.example.phonediary.files.SubNoteManager
 
 /**
- * Read-only rendering of note text for View mode: markers show as a
- * small icon + readable label (not raw brackets) and are tappable;
- * everything else renders as plain text.
+ * Read-only rendering of note text: markers show as an icon plus readable
+ * label (never raw brackets) and are tappable. onMarkerClick receives the
+ * marker type ("image", "file", "drawing", "note") and its raw label.
  */
 @Composable
 fun NoteViewRenderer(
@@ -27,22 +25,23 @@ fun NoteViewRenderer(
 ) {
     val markerColor = MaterialTheme.colorScheme.primary
 
-    val annotated = remember(text) {
+    val annotated = remember(text, markerColor) {
         val builder = AnnotatedString.Builder()
         var cursor = 0
         markerRegex.findAll(text).forEach { match ->
             builder.append(text.substring(cursor, match.range.first))
             val type = match.groupValues[1]
-            val name = match.groupValues[2]
+            val label = match.groupValues[2]
             val icon = when (type) {
                 "image" -> "🖼"
                 "drawing" -> "✍"
+                SubNoteManager.TYPE -> "🗒"
                 else -> "🔗"
             }
-            val tagStart = builder.length
-            builder.pushStringAnnotation("marker", "$type|$name")
+            val shown = if (type == SubNoteManager.TYPE) SubNoteManager.displayLabel(label) else label
+            builder.pushStringAnnotation("marker", "$type|$label")
             builder.withStyle(SpanStyle(color = markerColor, textDecoration = TextDecoration.Underline)) {
-                append("$icon $name")
+                append("$icon $shown")
             }
             builder.pop()
             cursor = match.range.last + 1
@@ -64,6 +63,10 @@ fun NoteViewRenderer(
     )
 
     if (text.isBlank()) {
-        Text("(empty note)", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "(empty note)",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
