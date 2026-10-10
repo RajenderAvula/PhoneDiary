@@ -953,6 +953,7 @@ private fun HomeTabContent() {
                     }
                 }
             }
+            DailySummaryCard(dateKey = date)
 
             if (dayLogEntries.isEmpty()) {
                 Text("No entries logged for this day yet.")
@@ -1478,6 +1479,8 @@ private fun CalendarMonthView(
 }
 @Composable
 private fun SettingsPanel(
+    import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.example.phonediary.ai.GeminiKeyStore
     context: Context,
     blockedApps: Set<String>,
     newBlockedPackage: String,
@@ -1488,6 +1491,8 @@ private fun SettingsPanel(
     onThemeChange: (AppTheme) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    var geminiKeyInput by remember { mutableStateOf("") }
+    var geminiKeyTick by remember { mutableStateOf(0) }
 
     // Bumped whenever the app resumes or a system settings screen returns,
     // forcing every permission/status check below to re-run.
@@ -1681,6 +1686,46 @@ private fun SettingsPanel(
                 onDismiss = { unusedFiles = null }
             )
         }
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Gemini (daily summary)", style = MaterialTheme.typography.titleSmall)
+        val keyHint = remember(geminiKeyTick) { GeminiKeyStore.hint(context) }
+        Text(
+            if (keyHint != null) "API key saved ($keyHint)" else "No API key saved",
+            style = MaterialTheme.typography.bodySmall
+        )
+        OutlinedTextField(
+            value = geminiKeyInput,
+            onValueChange = { geminiKeyInput = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Paste your Gemini API key") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation()
+        )
+        Row {
+            Button(
+                enabled = geminiKeyInput.isNotBlank(),
+                onClick = {
+                    GeminiKeyStore.save(context, geminiKeyInput)
+                    geminiKeyInput = ""
+                    geminiKeyTick++
+                }
+            ) { Text("Save key") }
+            Spacer(Modifier.width(8.dp))
+            if (keyHint != null) {
+                OutlinedButton(onClick = {
+                    GeminiKeyStore.clear(context)
+                    geminiKeyTick++
+                }) { Text("Remove key") }
+            }
+        }
+        Text(
+            "Used only when you tap Generate. The day's notes and app usage are sent to Google to write the summary, " +
+                "so it needs internet. On Google's free tier, submitted content may be used to improve their products. " +
+                "Check Google's terms before sending anything private.",
+            style = MaterialTheme.typography.labelSmall
+        )
 
         // ---- Theme ----
         Spacer(Modifier.height(12.dp))
