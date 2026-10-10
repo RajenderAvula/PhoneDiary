@@ -21,8 +21,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 
-val markerRegex = Regex("""[📎🔗✍]\[(image|file|drawing):\s*([^\]]+)\]""")
-
+//val markerRegex = Regex("""[📎🔗✍]\[(image|file|drawing):\s*([^\]]+)\]""")
+val markerRegex = Regex("""[📎🔗✍🗒]\[(image|file|drawing|note):\s*([^\]]+)\]""")
 private data class MarkerHit(val type: String, val name: String, val endExclusive: Int)
 
 /** If [charOffset] falls inside any marker's character range, returns that marker. */
