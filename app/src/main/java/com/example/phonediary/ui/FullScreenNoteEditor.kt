@@ -21,7 +21,13 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.phonediary.data.AppDatabase
+import com.example.phonediary.data.AttachmentListUtil
 import com.example.phonediary.data.LocationReminderItem
+import com.example.phonediary.data.LocationReminderListUtil
+import com.example.phonediary.data.LogEntry
 import com.example.phonediary.files.AttachmentCleanup
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
@@ -32,6 +38,7 @@ import com.example.phonediary.files.NotePrintHelper
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
+import com.example.phonediary.files.SubNoteManager
 import com.example.phonediary.files.TextScanHelper
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.GeofenceHelper
@@ -56,6 +63,9 @@ data class FullScreenNoteResult(
     val locationReminders: List<LocationReminderItem>
 )
 
+/** Which sub-note the nested editor is showing. entry == null means a brand-new, unsaved sub-note. */
+private class SubEditorTarget(val entry: LogEntry?)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullScreenNoteEditor(
@@ -73,11 +83,13 @@ fun FullScreenNoteEditor(
     /**
      * True when this editor is editing the note that belongs to one location
      * reminder. The location itself is the trigger, so note date/time,
-     * Reminder, Due and nested location reminders are hidden, and Repeat
-     * means "repeat while I'm inside this location".
+     * Reminder, Due, nested location reminders and sub-notes are hidden, and
+     * Repeat means "repeat while I'm inside this location".
      */
     isLocationNote: Boolean = false,
     locationNoteName: String = "",
+    /** True when this editor is editing a sub-note (only changes the title bar). */
+    isSubNote: Boolean = false,
     highlightQuery: String? = null,
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
@@ -158,6 +170,33 @@ fun FullScreenNoteEditor(
     var isScanningText by remember { mutableStateOf(false) }
     var isViewMode by remember { mutableStateOf(false) }
 
+    // ---- Sub-notes ----
+    val initialSubIds = remember { SubNoteManager.idsIn(initialText) }
+    // Sub-notes created in this editing session; removed again if this editor is cancelled.
+    val sessionCreatedSubIds = remember { mutableSetOf<Long>() }
+    var subEditor by remember { mutableStateOf<SubEditorTarget?>(null) }
+    var subNoteNotice by remember { mutableStateOf<String?>(null) }
+    var confirmSubDelete by remember { mutableStateOf<Set<Long>?>(null) }
+    var subNoteRefresh by remember { mutableStateOf(0) }
+    var subNoteTitles by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    val subNoteIds = remember(textFieldValue.text) { SubNoteManager.idsIn(textFieldValue.text).toList() }
+
+    // Live titles for the Sub-notes list; reloads when links change or a sub-note is saved.
+    LaunchedEffect(subNoteIds, subNoteRefresh) {
+        subNoteTitles = withContext(Dispatchers.IO) {
+            val dao = AppDatabase.getInstance(context).logEntryDao()
+            subNoteIds.associateWith { id ->
+                val e = dao.getById(id)
+                when {
+                    e == null || e.source != SubNoteManager.SOURCE -> "(deleted)"
+                    !e.title.isNullOrBlank() -> e.title!!
+                    else -> markerRegex.replace(e.note.orEmpty(), "").trim().take(40)
+                        .ifBlank { "Untitled sub-note" }
+                }
+            }
+        }
+    }
+
     fun insertAtCursor(marker: String) {
         val cursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
         val newText = textFieldValue.text.substring(0, cursor) + marker + textFieldValue.text.substring(cursor)
@@ -211,6 +250,33 @@ fun FullScreenNoteEditor(
         }
     }
 
+    fun openSubNote(id: Long?) {
+        subNoteNotice = null
+        if (id == null) {
+            subEditor = SubEditorTarget(null)
+            return
+        }
+        scope.launch {
+            val entry = withContext(Dispatchers.IO) { AppDatabase.getInstance(context).logEntryDao().getById(id) }
+            if (entry == null || entry.source != SubNoteManager.SOURCE) {
+                subNoteNotice = "That sub-note no longer exists"
+            } else {
+                subEditor = SubEditorTarget(entry)
+            }
+        }
+    }
+
+    /** Removes a sub-note's link from the text. The sub-note itself is deleted when this note is saved. */
+    fun removeSubNoteLink(id: Long) {
+        val stripped = markerRegex.replace(textFieldValue.text) { m ->
+            if (m.groupValues[1] == SubNoteManager.TYPE && SubNoteManager.parseId(m.groupValues[2]) == id) "" else m.value
+        }
+        if (stripped != textFieldValue.text) {
+            val cursor = textFieldValue.selection.start.coerceIn(0, stripped.length)
+            textFieldValue = TextFieldValue(stripped, selection = TextRange(cursor))
+        }
+    }
+
     fun cancelAndCleanup() {
         val initialNames = initialAttachmentNames.toSet()
         val initialLocationNames = initialLocationReminders.flatMap { it.attachmentNames }.toSet()
@@ -219,7 +285,40 @@ fun FullScreenNoteEditor(
             context,
             (sessionAddedNames - initialNames) + newLocationNames
         )
+        // Sub-notes created in this session were saved to the database already — remove them.
+        SubNoteManager.launchDeleteWithCascade(context, sessionCreatedSubIds.toSet())
         onCancel()
+    }
+
+    fun performSave(removedSubIds: Set<Long>) {
+        val finalSubIds = SubNoteManager.idsIn(textFieldValue.text)
+        SubNoteManager.launchDeleteWithCascade(
+            context,
+            removedSubIds + (sessionCreatedSubIds - finalSubIds)
+        )
+        // Files added this session but removed before saving are never referenced
+        // by anything — delete them now. (The check against other notes happens
+        // inside, so shared files are safe.)
+        val finalNames = (existingAttachmentNames + newAttachments.map { it.name }).toSet()
+        AttachmentCleanup.launchDeleteIfUnreferenced(
+            context,
+            sessionAddedNames - finalNames - initialAttachmentNames.toSet()
+        )
+        onSave(
+            FullScreenNoteResult(
+                title = title,
+                text = textFieldValue.text,
+                locationUrl = locationUrl,
+                tags = tags,
+                existingAttachmentNames = existingAttachmentNames,
+                newAttachments = newAttachments,
+                reminderAtMillis = reminderAtMillis,
+                dueAtMillis = dueAtMillis,
+                repeatRule = repeatRule,
+                noteDateTimeMillis = noteDateTimeMillis,
+                locationReminders = locationReminders
+            )
+        )
     }
 
     fun openMarkerAttachment(name: String) {
@@ -237,6 +336,15 @@ fun FullScreenNoteEditor(
                     // No app can open it — ignore.
                 }
             }
+        }
+    }
+
+    fun handleMarkerClick(type: String, name: String) {
+        if (type == SubNoteManager.TYPE) {
+            val id = SubNoteManager.parseId(name)
+            if (id != null) openSubNote(id) else subNoteNotice = "That sub-note link is damaged"
+        } else {
+            openMarkerAttachment(name)
         }
     }
 
@@ -394,7 +502,11 @@ fun FullScreenNoteEditor(
             TopAppBar(
                 title = {
                     Text(
-                        if (isLocationNote) "Note: ${locationNoteName.ifBlank { "location" }}" else "Note",
+                        when {
+                            isLocationNote -> "Note: ${locationNoteName.ifBlank { "location" }}"
+                            isSubNote -> "Sub-note"
+                            else -> "Note"
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -431,29 +543,9 @@ fun FullScreenNoteEditor(
                         )
                     }) { Text("🖨") }
                     TextButton(onClick = {
-                        // Files added this session but removed before saving are never
-                        // referenced by anything — delete them now. (The check against
-                        // other notes happens inside, so shared files are safe.)
-                        val finalNames = (existingAttachmentNames + newAttachments.map { it.name }).toSet()
-                        AttachmentCleanup.launchDeleteIfUnreferenced(
-                            context,
-                            sessionAddedNames - finalNames - initialAttachmentNames.toSet()
-                        )
-                        onSave(
-                            FullScreenNoteResult(
-                                title = title,
-                                text = textFieldValue.text,
-                                locationUrl = locationUrl,
-                                tags = tags,
-                                existingAttachmentNames = existingAttachmentNames,
-                                newAttachments = newAttachments,
-                                reminderAtMillis = reminderAtMillis,
-                                dueAtMillis = dueAtMillis,
-                                repeatRule = repeatRule,
-                                noteDateTimeMillis = noteDateTimeMillis,
-                                locationReminders = locationReminders
-                            )
-                        )
+                        // Sub-notes whose links were deleted are removed on save, after confirming.
+                        val removed = initialSubIds - SubNoteManager.idsIn(textFieldValue.text)
+                        if (removed.isNotEmpty()) confirmSubDelete = removed else performSave(emptySet())
                     }) { Text("Save") }
                 }
             )
@@ -531,7 +623,7 @@ fun FullScreenNoteEditor(
                     NoteViewRenderer(
                         text = textFieldValue.text,
                         modifier = Modifier.fillMaxWidth(),
-                        onMarkerClick = { _, name -> openMarkerAttachment(name) }
+                        onMarkerClick = { type, name -> handleMarkerClick(type, name) }
                     )
                 }
             } else {
@@ -542,7 +634,7 @@ fun FullScreenNoteEditor(
                     placeholderText = "Write your note…",
                     minLines = 6,
                     maxLines = 14,
-                    onMarkerClick = { _, name -> openMarkerAttachment(name) }
+                    onMarkerClick = { type, name -> handleMarkerClick(type, name) }
                 )
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -558,6 +650,9 @@ fun FullScreenNoteEditor(
                     IconButton(onClick = { insertImageLauncher.launch("image/*") }) { Text("🖼") }
                     IconButton(onClick = { attachFileLauncher.launch(arrayOf("*/*")) }) { Text("🔗") }
                     IconButton(onClick = { showScribblePad = true }) { Text("✍") }
+                    if (!isLocationNote) {
+                        IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
+                    }
                 }
             }
 
@@ -570,6 +665,43 @@ fun FullScreenNoteEditor(
             }
             speechError?.let {
                 Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+
+            // ---- Sub-notes ----
+            if (!isLocationNote) {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
+                    OutlinedButton(onClick = { openSubNote(null) }) { Text("+ Sub-note") }
+                }
+                if (subNoteIds.isEmpty()) {
+                    Text(
+                        "None yet — a sub-note is a clickable note inside this one, with all the same features.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                subNoteIds.forEach { id ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { openSubNote(id) }
+                        ) {
+                            Text(
+                                "🗒 ${subNoteTitles[id] ?: "…"}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
+                    }
+                }
+                subNoteNotice?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
             }
 
             Spacer(Modifier.height(12.dp))
@@ -755,5 +887,63 @@ fun FullScreenNoteEditor(
             },
             onCancel = { showScribblePad = false }
         )
+    }
+
+    // ---- Confirm before deleting sub-notes whose links were removed ----
+    confirmSubDelete?.let { ids ->
+        ConfirmDeleteDialog(
+            message = "${ids.size} sub-note(s) will be permanently deleted, with their attachments and reminders, " +
+                "because their links were removed from this note. Continue?",
+            onConfirm = {
+                confirmSubDelete = null
+                performSave(ids)
+            },
+            onDismiss = { confirmSubDelete = null }
+        )
+    }
+
+    // ---- Nested editor for one sub-note. Its own Dialog window, so its Scaffold
+    //      never sits inside this editor's scrolling column. ----
+    subEditor?.let { target ->
+        val e = target.entry
+        Dialog(
+            onDismissRequest = { subEditor = null },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = false
+            )
+        ) {
+            Surface(modifier = Modifier.fillMaxSize()) {
+                FullScreenNoteEditor(
+                    initialTitle = e?.title ?: "",
+                    initialText = e?.note ?: "",
+                    initialLocationUrl = e?.locationUrl ?: "",
+                    initialTags = AttachmentListUtil.toList(e?.tags),
+                    initialAttachmentNames = AttachmentListUtil.toList(e?.attachmentFileName).distinct(),
+                    initialReminderAtMillis = e?.reminderAtMillis,
+                    initialDueAtMillis = e?.dueAtMillis,
+                    initialRepeatRule = e?.repeatRule ?: "NONE",
+                    initialNoteDateTimeMillis = e?.timestampMillis ?: noteDateTimeMillis,
+                    initialLocationReminders = LocationReminderListUtil.fromStored(e?.locationReminders),
+                    existingEntryId = e?.id,
+                    isSubNote = true,
+                    onSave = { r ->
+                        val wasNew = e == null
+                        scope.launch {
+                            val id = SubNoteManager.save(context, e, r)
+                            if (wasNew) {
+                                sessionCreatedSubIds += id
+                                val label = r.title.ifBlank { markerRegex.replace(r.text, "").trim() }
+                                insertAtCursor(SubNoteManager.marker(id, label))
+                            }
+                            subNoteRefresh++
+                            subEditor = null
+                        }
+                    },
+                    onCancel = { subEditor = null }
+                )
+            }
+        }
     }
 }
