@@ -62,6 +62,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.phonediary.files.AttachmentCleanup
+import com.example.phonediary.files.SubNoteManager
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -394,7 +395,9 @@ private fun HomeTabContent() {
         searchResults = null
         searchQuery = ""
         scope.launch {
+            //dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
             dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
+                .filter { it.source != SubNoteManager.SOURCE }
         }
     }
 
@@ -505,6 +508,7 @@ private fun HomeTabContent() {
                 GeofenceHelper.removeAllGeofencesForEntry(context, it.id, LocationReminderListUtil.fromStored(it.locationReminders))
                 CalendarWriter.deleteEntryEvent(context, it.id)
                 removedNames += AttachmentCleanup.namesOf(it)
+                SubNoteManager.deleteAllIn(context, it.note)
                 dao.delete(it)
             }
             AttachmentCleanup.deleteIfUnreferenced(context, removedNames)
@@ -521,6 +525,7 @@ private fun HomeTabContent() {
             NoteReminderScheduler.cancelRepeat(context, entry.id)
             GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, LocationReminderListUtil.fromStored(entry.locationReminders))
             CalendarWriter.deleteEntryEvent(context, entry.id)
+            SubNoteManager.deleteAllIn(context, entry.note)
             AppDatabase.getInstance(context).logEntryDao().delete(entry)
             AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry))
             openDate(dateKey)
@@ -1093,6 +1098,7 @@ private fun HomeTabContent() {
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
+                                        SubNoteManager.deleteRemoved(context, entry.note, updated.note)
                                         AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated))
                                         NoteReminderScheduler.cancelReminder(context, entry.id)
                                         NoteReminderScheduler.cancelDue(context, entry.id)
