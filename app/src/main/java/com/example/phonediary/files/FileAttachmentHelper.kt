@@ -89,7 +89,7 @@ object FileAttachmentHelper {
 
     // ---------------------------------------------------------------- dedupe
 
-    private fun findExistingDuplicate(
+  /*  private fun findExistingDuplicate(
         context: Context,
         sourceUri: Uri,
         displayName: String,
@@ -129,6 +129,52 @@ object FileAttachmentHelper {
             val dir = legacyDir(subfolder)
             val regex = Regex("^" + Regex.escape(base) + "( \\(\\d+\\))*" + Regex.escape(ext) + "$")
             dir.listFiles()?.filter { it.isFile && (it.name == displayName || regex.matches(it.name)) }?.forEach { file ->
+                if (sourceSize >= 0 && file.length() != sourceSize) return@forEach
+                val candidate = fileProviderUri(context, file)
+                if (sha256(context, candidate) == sourceHash) return SavedAttachment(file.name, candidate)
+            }
+        }
+        return null
+    }*/
+
+    /**
+     * Finds an identical file already in the folder, whatever its name. The two
+     * pickers can give the same photo different names, so matching by name
+     * isn't enough: candidates are narrowed by size, then confirmed by SHA-256.
+     */
+    private fun findExistingDuplicate(
+        context: Context,
+        sourceUri: Uri,
+        displayName: String,
+        subfolder: String
+    ): SavedAttachment? {
+        val sourceSize = querySize(context, sourceUri)
+        val sourceHash = sha256(context, sourceUri) ?: return null
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val relative = "${Environment.DIRECTORY_DOWNLOADS}/$subfolder"
+            var selection = "(${MediaStore.MediaColumns.RELATIVE_PATH} = ? OR ${MediaStore.MediaColumns.RELATIVE_PATH} = ?)"
+            val args = mutableListOf(relative, "$relative/")
+            if (sourceSize >= 0) {
+                selection += " AND ${MediaStore.MediaColumns.SIZE} = ?"
+                args += sourceSize.toString()
+            }
+            context.contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME),
+                selection,
+                args.toTypedArray(),
+                null
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(0)
+                    val name = cursor.getString(1) ?: continue
+                    val candidate = ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id)
+                    if (sha256(context, candidate) == sourceHash) return SavedAttachment(name, candidate)
+                }
+            }
+        } else {
+            legacyDir(subfolder).listFiles()?.filter { it.isFile }?.forEach { file ->
                 if (sourceSize >= 0 && file.length() != sourceSize) return@forEach
                 val candidate = fileProviderUri(context, file)
                 if (sha256(context, candidate) == sourceHash) return SavedAttachment(file.name, candidate)
