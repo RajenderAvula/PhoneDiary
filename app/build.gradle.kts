@@ -3,6 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
 }
+android {
+    ...
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+}
+
 
 android {
     namespace = "com.example.phonediary"
