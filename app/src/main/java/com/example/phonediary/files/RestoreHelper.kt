@@ -27,7 +27,8 @@ object RestoreHelper {
     /**
      * Restores a backup zip. Safe to run more than once: notes that already
      * exist (same time, source, title and text) are skipped, and attachment
-     * files already on the phone are not copied again.
+     * files already on the phone are not copied again. Sub-note links are
+     * rewritten to the ids the restored sub-notes actually received.
      */
     suspend fun restoreFromZip(context: Context, uri: Uri): RestoreResult? = withContext(Dispatchers.IO) {
         val tempDir = File(context.cacheDir, "restore_${System.currentTimeMillis()}").apply { mkdirs() }
@@ -83,12 +84,17 @@ object RestoreHelper {
             val db = AppDatabase.getInstance(context)
             val dao = db.logEntryDao()
 
+            // Sub-note ids are stripped from the text in the key, so a note
+            // restored earlier (whose links were rewritten) still matches.
             fun key(ts: Long, source: String, title: String?, note: String?, app: String?) =
-                "$ts|$source|${title.orEmpty()}|${note.orEmpty()}|${app.orEmpty()}"
+                "$ts|$source|${title.orEmpty()}|${SubNoteManager.normalizeForKey(note).orEmpty()}|${app.orEmpty()}"
 
-            val existingKeys = dao.getAllEntries()
-                .map { key(it.timestampMillis, it.source, it.title, it.note, it.appName) }
-                .toMutableSet()
+            val existingByKey = dao.getAllEntries()
+                .associateBy({ key(it.timestampMillis, it.source, it.title, it.note, it.appName) }, { it.id })
+                .toMutableMap()
+
+            val idMap = mutableMapOf<Long, Long>()               // id in the backup -> id on this phone
+            val restoredNew = mutableListOf<Pair<Long, LogEntry>>()
 
             val now = System.currentTimeMillis()
             val touchedDates = mutableSetOf<String>()
@@ -99,9 +105,14 @@ object RestoreHelper {
                 val timestamp = o.lng("timestampMillis") ?: continue
                 val dateKey = o.str("dateKey") ?: continue
                 val source = o.str("source") ?: "manual_note"
+                val oldId = o.lng("id")
 
                 val k = key(timestamp, source, o.str("title"), o.str("note"), o.str("appName"))
-                if (!existingKeys.add(k)) continue
+                val duplicateId = existingByKey[k]
+                if (duplicateId != null) {
+                    if (oldId != null) idMap[oldId] = duplicateId
+                    continue
+                }
 
                 // id = 0 lets Room assign a fresh id, so restoring never collides with existing rows.
                 val restored = LogEntry(
@@ -123,6 +134,9 @@ object RestoreHelper {
                     locationReminders = o.str("locationReminders")
                 )
                 val newId = dao.insert(restored)
+                existingByKey[k] = newId
+                if (oldId != null) idMap[oldId] = newId
+                restoredNew += newId to restored.copy(id = newId)
                 entriesRestored++
                 touchedDates += dateKey
 
@@ -140,6 +154,14 @@ object RestoreHelper {
                 if (locationItems.any { it.enabled }) {
                     // Don't fire for zones you're already standing in.
                     GeofenceHelper.syncGeofencesForEntry(context, newId, locationItems, fireIfAlreadyInside = false)
+                }
+            }
+
+            // ---- Point every restored sub-note link at its new id ----
+            restoredNew.forEach { (newId, restored) ->
+                val remapped = SubNoteManager.remapIds(restored.note, idMap)
+                if (remapped != restored.note) {
+                    dao.update(restored.copy(id = newId, note = remapped))
                 }
             }
 
