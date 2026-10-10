@@ -22,6 +22,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.phonediary.data.LocationReminderItem
+import com.example.phonediary.files.AttachmentCleanup
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.files.LocationOpenHelper
@@ -35,7 +36,9 @@ import com.example.phonediary.files.TextScanHelper
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.GeofenceHelper
 import com.example.phonediary.reminders.GeofenceStatusStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -94,8 +97,25 @@ fun FullScreenNoteEditor(
     var locationUrl by remember { mutableStateOf(initialLocationUrl) }
     var tagInput by remember { mutableStateOf("") }
     var tags by remember { mutableStateOf(initialTags) }
-    var existingAttachmentNames by remember { mutableStateOf(initialAttachmentNames) }
+
+    // The attachment list is the single source of truth: each file appears once.
+    // Notes saved earlier with duplicate names are de-duplicated on open.
+    var existingAttachmentNames by remember { mutableStateOf(initialAttachmentNames.distinct()) }
     var newAttachments by remember { mutableStateOf(listOf<SavedAttachment>()) }
+
+    // Attachments that exist only because of an inline link. Deleting the last
+    // link removes them. A file that was also attached separately is not in here,
+    // so deleting its link leaves it attached.
+    var inlineOwned by remember {
+        mutableStateOf(
+            markerRegex.findAll(initialText).map { it.groupValues[2] }.toSet()
+                .intersect(initialAttachmentNames.toSet())
+        )
+    }
+    // Files freshly added during this editing session (used to clean up on cancel).
+    val sessionAddedNames = remember { mutableSetOf<String>() }
+    var attachmentNotice by remember { mutableStateOf<String?>(null) }
+
     var isRecordingAudio by remember { mutableStateOf(false) }
     var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingVideoName by remember { mutableStateOf<String?>(null) }
@@ -142,6 +162,64 @@ fun FullScreenNoteEditor(
         val cursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
         val newText = textFieldValue.text.substring(0, cursor) + marker + textFieldValue.text.substring(cursor)
         textFieldValue = TextFieldValue(newText, selection = TextRange(cursor + marker.length))
+    }
+
+    /**
+     * The only way an attachment is added. marker == null: attached separately
+     * (Attach files / voice / video). marker != null: inserted inline at the cursor.
+     * A file already in the list is never added a second time.
+     */
+    fun addAttachment(saved: SavedAttachment, marker: String?) {
+        val alreadyListed = saved.name in existingAttachmentNames || newAttachments.any { it.name == saved.name }
+        if (!alreadyListed) {
+            sessionAddedNames += saved.name
+            newAttachments = newAttachments + saved
+        }
+        if (marker != null) {
+            // Only a file that exists purely because of an inline link is owned by that link.
+            if (!alreadyListed) inlineOwned = inlineOwned + saved.name
+            insertAtCursor(marker)
+        } else {
+            inlineOwned = inlineOwned - saved.name
+            if (alreadyListed) attachmentNotice = "\"${saved.name}\" is already attached"
+        }
+    }
+
+    /** Removes an attachment from the list AND strips its inline links from the text. */
+    fun removeAttachment(name: String) {
+        existingAttachmentNames = existingAttachmentNames.filterNot { it == name }
+        newAttachments = newAttachments.filterNot { it.name == name }
+        inlineOwned = inlineOwned - name
+        val stripped = markerRegex.replace(textFieldValue.text) {
+            if (it.groupValues[2] == name) "" else it.value
+        }
+        if (stripped != textFieldValue.text) {
+            val cursor = textFieldValue.selection.start.coerceIn(0, stripped.length)
+            textFieldValue = TextFieldValue(stripped, selection = TextRange(cursor))
+        }
+    }
+
+    // Deleting the last inline link of an inline-owned attachment removes that attachment too.
+    LaunchedEffect(textFieldValue.text) {
+        val present = markerRegex.findAll(textFieldValue.text).map { it.groupValues[2] }.toSet()
+        val gone = inlineOwned.filter { it !in present }.toSet()
+        if (gone.isNotEmpty()) {
+            existingAttachmentNames = existingAttachmentNames.filterNot { it in gone }
+            newAttachments = newAttachments.filterNot { it.name in gone }
+            inlineOwned = inlineOwned - gone
+            attachmentNotice = "Removed ${gone.joinToString(", ")} — its link was deleted from the note"
+        }
+    }
+
+    fun cancelAndCleanup() {
+        val initialNames = initialAttachmentNames.toSet()
+        val initialLocationNames = initialLocationReminders.flatMap { it.attachmentNames }.toSet()
+        val newLocationNames = locationReminders.flatMap { it.attachmentNames }.toSet() - initialLocationNames
+        AttachmentCleanup.launchDeleteIfUnreferenced(
+            context,
+            (sessionAddedNames - initialNames) + newLocationNames
+        )
+        onCancel()
     }
 
     fun openMarkerAttachment(name: String) {
@@ -215,11 +293,8 @@ fun FullScreenNoteEditor(
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val saved = FileAttachmentHelper.copyToDownloads(context, uri)
-                if (saved != null) {
-                    newAttachments = newAttachments + saved
-                    insertAtCursor("📎[image: ${saved.name}]")
-                }
+                val saved = withContext(Dispatchers.IO) { FileAttachmentHelper.copyToDownloads(context, uri) }
+                if (saved != null) addAttachment(saved, "📎[image: ${saved.name}]")
             }
         }
     }
@@ -229,11 +304,8 @@ fun FullScreenNoteEditor(
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val saved = FileAttachmentHelper.copyToDownloads(context, uri)
-                if (saved != null) {
-                    newAttachments = newAttachments + saved
-                    insertAtCursor("🔗[file: ${saved.name}]")
-                }
+                val saved = withContext(Dispatchers.IO) { FileAttachmentHelper.copyToDownloads(context, uri) }
+                if (saved != null) addAttachment(saved, "🔗[file: ${saved.name}]")
             }
         }
     }
@@ -267,8 +339,10 @@ fun FullScreenNoteEditor(
         val distinctUris = uris.distinct()
         if (distinctUris.isNotEmpty()) {
             scope.launch {
-                val saved = distinctUris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
-                newAttachments = newAttachments + saved
+                val saved = withContext(Dispatchers.IO) {
+                    distinctUris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
+                }
+                saved.forEach { addAttachment(it, null) }
             }
         }
     }
@@ -280,7 +354,7 @@ fun FullScreenNoteEditor(
             val uri = pendingVideoUri
             val name = pendingVideoName
             if (uri != null && name != null) {
-                newAttachments = newAttachments + SavedAttachment(name, uri)
+                addAttachment(SavedAttachment(name, uri), null)
             }
         }
         pendingVideoUri = null
@@ -291,7 +365,7 @@ fun FullScreenNoteEditor(
         if (isRecordingAudio) {
             val saved = audioRecorder.stopRecordingAndSave()
             isRecordingAudio = false
-            if (saved != null) newAttachments = newAttachments + saved
+            if (saved != null) addAttachment(saved, null)
         } else {
             try {
                 audioRecorder.startRecording()
@@ -326,7 +400,7 @@ fun FullScreenNoteEditor(
                     )
                 },
                 navigationIcon = {
-                    TextButton(onClick = onCancel) { Text("✕ Cancel") }
+                    TextButton(onClick = { cancelAndCleanup() }) { Text("✕ Cancel") }
                 },
                 actions = {
                     TextButton(onClick = {
@@ -357,6 +431,14 @@ fun FullScreenNoteEditor(
                         )
                     }) { Text("🖨") }
                     TextButton(onClick = {
+                        // Files added this session but removed before saving are never
+                        // referenced by anything — delete them now. (The check against
+                        // other notes happens inside, so shared files are safe.)
+                        val finalNames = (existingAttachmentNames + newAttachments.map { it.name }).toSet()
+                        AttachmentCleanup.launchDeleteIfUnreferenced(
+                            context,
+                            sessionAddedNames - finalNames - initialAttachmentNames.toSet()
+                        )
                         onSave(
                             FullScreenNoteResult(
                                 title = title,
@@ -632,22 +714,25 @@ fun FullScreenNoteEditor(
             }
             existingAttachmentNames.forEach { name ->
                 if (name in markerNames) {
-                    Text("↳ referenced in note text", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text("↳ linked in note text", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
                 ResolvingAttachmentPreview(
                     name = name,
-                    onRemove = { existingAttachmentNames = existingAttachmentNames.filterNot { it == name } }
+                    onRemove = { removeAttachment(name) }
                 )
             }
             newAttachments.forEach { attachment ->
                 if (attachment.name in markerNames) {
-                    Text("↳ referenced in note text", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text("↳ linked in note text", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
                 AttachmentPreview(
                     name = attachment.name,
                     uri = attachment.uri,
-                    onRemove = { newAttachments = newAttachments.filterNot { it.name == attachment.name } }
+                    onRemove = { removeAttachment(attachment.name) }
                 )
+            }
+            attachmentNotice?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) { Text("Attach files") }
@@ -665,10 +750,7 @@ fun FullScreenNoteEditor(
         InlineScribblePad(
             onInsert = { bitmap ->
                 val saved = FileAttachmentHelper.saveBitmapAsAttachment(context, bitmap)
-                if (saved != null) {
-                    newAttachments = newAttachments + saved
-                    insertAtCursor("✍[drawing: ${saved.name}]")
-                }
+                if (saved != null) addAttachment(saved, "✍[drawing: ${saved.name}]")
                 showScribblePad = false
             },
             onCancel = { showScribblePad = false }
