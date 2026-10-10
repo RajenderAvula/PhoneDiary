@@ -329,7 +329,8 @@ private fun HomeTabContent() {
         if (distinctUris.isNotEmpty()) {
             scope.launch {
                 val saved = distinctUris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
-                pendingAttachments = pendingAttachments + saved
+               // pendingAttachments = pendingAttachments + saved
+               pendingAttachments = (pendingAttachments + saved).distinctBy { it.name }
             }
         }
     }
@@ -341,7 +342,8 @@ private fun HomeTabContent() {
             val uri = pendingVideoUri
             val name = pendingVideoName
             if (uri != null && name != null) {
-                pendingAttachments = pendingAttachments + SavedAttachment(name, uri)
+                //pendingAttachments = pendingAttachments + SavedAttachment(name, uri)
+                pendingAttachments = (pendingAttachments + SavedAttachment(name, uri)).distinctBy { it.name }
             }
         }
         pendingVideoUri = null
@@ -352,7 +354,8 @@ private fun HomeTabContent() {
         if (isRecordingAudio) {
             val saved = audioRecorder.stopRecordingAndSave()
             isRecordingAudio = false
-            if (saved != null) pendingAttachments = pendingAttachments + saved
+            if (saved != null) pendingAttachments = (pendingAttachments + saved).distinctBy { it.name }
+            //pendingAttachments = pendingAttachments + saved
         } else {
             try {
                 audioRecorder.startRecording()
@@ -920,7 +923,11 @@ private fun HomeTabContent() {
                 }
             }) { Text("Save entry") }
             Spacer(Modifier.width(8.dp))
-            OutlinedButton(onClick = { resetMainEntryFields() }) { Text("Cancel") }
+            //OutlinedButton(onClick = { resetMainEntryFields() }) { Text("Cancel") }
+            OutlinedButton(onClick = {
+    AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
+    resetMainEntryFields()
+}) { Text("Cancel") }
         }
 
         // ---- 4. Day details ----
@@ -1086,6 +1093,7 @@ private fun HomeTabContent() {
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
+                                        AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated))
                                         NoteReminderScheduler.cancelReminder(context, entry.id)
                                         NoteReminderScheduler.cancelDue(context, entry.id)
                                         NoteReminderScheduler.cancelRepeat(context, entry.id)
@@ -1145,7 +1153,8 @@ private fun HomeTabContent() {
                                             editingTitle = entry.title ?: ""
                                             editingNoteText = entry.note ?: ""
                                             editingLocationText = entry.locationUrl ?: ""
-                                            editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
+                                            //editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
+                                            editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName).distinct()
                                             editingReminderAtMillis = entry.reminderAtMillis
                                             editingDueAtMillis = entry.dueAtMillis
                                             editingRepeatConfig = RepeatConfig.fromStored(entry.repeatRule)
@@ -1254,7 +1263,8 @@ private fun HomeTabContent() {
             val initialText = if (editingId == null) noteText else (loadedEntry?.note ?: "")
             val initialLocation = if (editingId == null) locationText else (loadedEntry?.locationUrl ?: "")
             val initialTags = if (editingId == null) noteTags else TagListUtil.toList(loadedEntry?.tags)
-            val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName)
+           // val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName)
+           val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName).distinct()
             val initialReminder = if (editingId == null) reminderAtMillis else loadedEntry?.reminderAtMillis
             val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
             val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
@@ -1343,6 +1353,7 @@ private fun HomeTabContent() {
                                     lastModifiedMillis = System.currentTimeMillis()
                                 )
                                 AppDatabase.getInstance(context).logEntryDao().update(updated)
+                                AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated))
                                 NoteReminderScheduler.cancelReminder(context, entry.id)
                                 NoteReminderScheduler.cancelDue(context, entry.id)
                                 NoteReminderScheduler.cancelRepeat(context, entry.id)
