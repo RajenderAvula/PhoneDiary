@@ -63,6 +63,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.phonediary.files.AttachmentCleanup
 import com.example.phonediary.files.SubNoteManager
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.example.phonediary.ai.GeminiKeyStore
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -1479,8 +1481,8 @@ private fun CalendarMonthView(
 }
 @Composable
 private fun SettingsPanel(
-    import androidx.compose.ui.text.input.PasswordVisualTransformation
-import com.example.phonediary.ai.GeminiKeyStore
+  //  import androidx.compose.ui.text.input.PasswordVisualTransformation
+//import com.example.phonediary.ai.GeminiKeyStore
     context: Context,
     blockedApps: Set<String>,
     newBlockedPackage: String,
