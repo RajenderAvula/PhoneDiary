@@ -61,6 +61,7 @@ import java.util.Locale
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.example.phonediary.files.AttachmentCleanup
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -461,7 +462,7 @@ private fun HomeTabContent() {
         context.startActivity(Intent(Intent.ACTION_VIEW).setData(builder.build()))
     }
 
-    fun performDeleteSelectedEntries(dateKey: String) {
+   /* fun performDeleteSelectedEntries(dateKey: String) {
         scope.launch {
             val dao = AppDatabase.getInstance(context).logEntryDao()
             dayLogEntries.filter { it.id in selectedEntryIds }.forEach {
@@ -486,6 +487,39 @@ private fun HomeTabContent() {
             GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, LocationReminderListUtil.fromStored(entry.locationReminders))
             CalendarWriter.deleteEntryEvent(context, entry.id)
             AppDatabase.getInstance(context).logEntryDao().delete(entry)
+            openDate(dateKey)
+            loadAllTags()
+        }
+    }*/
+    fun performDeleteSelectedEntries(dateKey: String) {
+        scope.launch {
+            val dao = AppDatabase.getInstance(context).logEntryDao()
+            val removedNames = mutableSetOf<String>()
+            dayLogEntries.filter { it.id in selectedEntryIds }.forEach {
+                NoteReminderScheduler.cancelReminder(context, it.id)
+                NoteReminderScheduler.cancelDue(context, it.id)
+                NoteReminderScheduler.cancelRepeat(context, it.id)
+                GeofenceHelper.removeAllGeofencesForEntry(context, it.id, LocationReminderListUtil.fromStored(it.locationReminders))
+                CalendarWriter.deleteEntryEvent(context, it.id)
+                removedNames += AttachmentCleanup.namesOf(it)
+                dao.delete(it)
+            }
+            AttachmentCleanup.deleteIfUnreferenced(context, removedNames)
+            selectedEntryIds = emptySet()
+            selectionMode = false
+            openDate(dateKey)
+        }
+    }
+
+    fun performDeleteEntry(entry: LogEntry, dateKey: String) {
+        scope.launch {
+            NoteReminderScheduler.cancelReminder(context, entry.id)
+            NoteReminderScheduler.cancelDue(context, entry.id)
+            NoteReminderScheduler.cancelRepeat(context, entry.id)
+            GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, LocationReminderListUtil.fromStored(entry.locationReminders))
+            CalendarWriter.deleteEntryEvent(context, entry.id)
+            AppDatabase.getInstance(context).logEntryDao().delete(entry)
+            AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry))
             openDate(dateKey)
             loadAllTags()
         }
@@ -827,7 +861,11 @@ private fun HomeTabContent() {
                 AttachmentPreview(
                     name = attachment.name,
                     uri = attachment.uri,
-                    onRemove = { pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name } }
+                // onRemove = { pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name } }
+                    onRemove = {
+    pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name }
+    AttachmentCleanup.launchDeleteIfUnreferenced(context, listOf(attachment.name))
+                    }
                 )
             }
         }
@@ -1437,6 +1475,8 @@ private fun SettingsPanel(
     // Bumped whenever the app resumes or a system settings screen returns,
     // forcing every permission/status check below to re-run.
     var refreshTick by remember { mutableStateOf(0) }
+    var unusedFiles by remember { mutableStateOf<List<String>?>(null) }
+    var cleanupStatus by remember { mutableStateOf<String?>(null) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -1591,6 +1631,39 @@ private fun SettingsPanel(
                 refreshTick++
             }
         }) { Text("Re-register all location reminders") }
+
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Attachment files", style = MaterialTheme.typography.titleSmall)
+        OutlinedButton(onClick = {
+            scope.launch {
+                val found = AttachmentCleanup.findUnreferencedFiles(context)
+                if (found.isEmpty()) {
+                    cleanupStatus = "No unused files found"
+                    unusedFiles = null
+                } else {
+                    cleanupStatus = null
+                    unusedFiles = found
+                }
+            }
+        }) { Text("Find unused attachment files") }
+        cleanupStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        unusedFiles?.let { files ->
+            ConfirmDeleteDialog(
+                message = "${files.size} file(s) in Downloads/PhoneDiary aren't used by any note. " +
+                    "Save or cancel any note you have open first. Delete them?",
+                onConfirm = {
+                    unusedFiles = null
+                    scope.launch {
+                        val deleted = AttachmentCleanup.deleteUnreferencedFiles(context)
+                        cleanupStatus = "Deleted $deleted of ${files.size} file(s)"
+                    }
+                },
+                onDismiss = { unusedFiles = null }
+            )
+        }
 
         // ---- Theme ----
         Spacer(Modifier.height(12.dp))
