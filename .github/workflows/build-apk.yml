@@ -1,4 +1,4 @@
-      - name: Restore debug.keystore from Secret
+       name: Restore debug.keystore from Secret
         env:
           KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
