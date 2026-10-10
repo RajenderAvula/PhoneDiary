@@ -2,12 +2,20 @@ package com.example.phonediary.files
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 
+/**
+ * Two speech modes sharing one engine:
+ *  - startOneShot(): ONLINE. Standard cloud recognizer, one final result. Needs internet.
+ *  - start():        OFFLINE-first. On-device recognizer when available (Android 12+),
+ *                    live partial results while speaking.
+ */
 class StreamingSpeechHelper(private val context: Context) {
 
     private var recognizer: SpeechRecognizer? = null
@@ -19,7 +27,16 @@ class StreamingSpeechHelper(private val context: Context) {
     fun isOnDeviceAvailable(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
 
-    /** Streaming mode with live partial results — used by the 🎙️ button. */
+    /** True only when the phone has a working, validated internet connection. */
+    fun isOnline(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    /** OFFLINE-first mode with live partial results — used by the 🎙️ button. */
     fun start(
         onPartialResult: (String) -> Unit,
         onFinalResult: (String) -> Unit,
@@ -27,6 +44,7 @@ class StreamingSpeechHelper(private val context: Context) {
         onListeningStateChanged: (Boolean) -> Unit
     ) {
         beginSession(
+            online = false,
             partialResultsEnabled = true,
             onPartialResult = onPartialResult,
             onResult = onFinalResult,
@@ -35,19 +53,14 @@ class StreamingSpeechHelper(private val context: Context) {
         )
     }
 
-    /**
-     * One-shot mode — no live partial text, just a single final result.
-     * Uses SpeechRecognizer directly rather than launching Google's own
-     * voice-search dialog activity (RecognizerIntent + startActivity),
-     * since that dialog can fail independently of actual recognition
-     * capability ("Voice search isn't available").
-     */
+    /** ONLINE one-shot mode, a single final result — used by the 🎤 button. */
     fun startOneShot(
         onResult: (String) -> Unit,
         onError: (String) -> Unit,
         onListeningStateChanged: (Boolean) -> Unit
     ) {
         beginSession(
+            online = true,
             partialResultsEnabled = false,
             onPartialResult = {},
             onResult = onResult,
@@ -57,6 +70,7 @@ class StreamingSpeechHelper(private val context: Context) {
     }
 
     private fun beginSession(
+        online: Boolean,
         partialResultsEnabled: Boolean,
         onPartialResult: (String) -> Unit,
         onResult: (String) -> Unit,
@@ -67,9 +81,26 @@ class StreamingSpeechHelper(private val context: Context) {
             onError("Speech recognition not available on this device")
             return
         }
+        if (online && !isOnline()) {
+            onError("No internet connection — the 🎤 mic needs internet. Use 🎙️ for offline.")
+            return
+        }
         stop()
 
-        val useOnDevice = isOnDeviceAvailable()
+        // Online: always the standard (cloud) recognizer. Offline: on-device if it exists.
+        val useOnDevice = !online && isOnDeviceAvailable()
+        runSession(useOnDevice, online, partialResultsEnabled, onPartialResult, onResult, onError, onListeningStateChanged)
+    }
+
+    private fun runSession(
+        useOnDevice: Boolean,
+        online: Boolean,
+        partialResultsEnabled: Boolean,
+        onPartialResult: (String) -> Unit,
+        onResult: (String) -> Unit,
+        onError: (String) -> Unit,
+        onListeningStateChanged: (Boolean) -> Unit
+    ) {
         val newRecognizer = if (useOnDevice) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         } else {
@@ -93,26 +124,24 @@ class StreamingSpeechHelper(private val context: Context) {
                 isListening = false
                 onListeningStateChanged(false)
 
+                // On-device model failed (not just "heard nothing"): retry once with the standard recognizer.
                 if (useOnDevice && error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                     newRecognizer.destroy()
                     recognizer = null
-                    beginFallbackSession(partialResultsEnabled, onPartialResult, onResult, onError, onListeningStateChanged)
+                    runSession(false, online, partialResultsEnabled, onPartialResult, onResult, onError, onListeningStateChanged)
                     return
                 }
-
-                onError(errorMessage(error))
+                onError(errorMessage(error, online))
             }
             override fun onResults(results: Bundle?) {
                 isListening = false
                 onListeningStateChanged(false)
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val finalText = matches?.firstOrNull()
+                val finalText = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                 if (!finalText.isNullOrBlank()) onResult(finalText)
             }
             override fun onPartialResults(partialResults: Bundle?) {
                 if (!partialResultsEnabled) return
-                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val partialText = matches?.firstOrNull()
+                val partialText = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                 if (!partialText.isNullOrBlank()) onPartialResult(partialText)
             }
             override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -121,76 +150,28 @@ class StreamingSpeechHelper(private val context: Context) {
         val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, partialResultsEnabled)
-            if (useOnDevice) {
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            }
+            // Online mode explicitly does not ask for the offline model.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !online && useOnDevice)
         }
         newRecognizer.startListening(recognizerIntent)
     }
 
-    private fun beginFallbackSession(
-        partialResultsEnabled: Boolean,
-        onPartialResult: (String) -> Unit,
-        onResult: (String) -> Unit,
-        onError: (String) -> Unit,
-        onListeningStateChanged: (Boolean) -> Unit
-    ) {
-        val fallbackRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
-        recognizer = fallbackRecognizer
-
-        fallbackRecognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                isListening = true
-                onListeningStateChanged(true)
-            }
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {
-                isListening = false
-                onListeningStateChanged(false)
-            }
-            override fun onError(error: Int) {
-                isListening = false
-                onListeningStateChanged(false)
-                onError(errorMessage(error))
-            }
-            override fun onResults(results: Bundle?) {
-                isListening = false
-                onListeningStateChanged(false)
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val finalText = matches?.firstOrNull()
-                if (!finalText.isNullOrBlank()) onResult(finalText)
-            }
-            override fun onPartialResults(partialResults: Bundle?) {
-                if (!partialResultsEnabled) return
-                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val partialText = matches?.firstOrNull()
-                if (!partialText.isNullOrBlank()) onPartialResult(partialText)
-            }
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, partialResultsEnabled)
-        }
-        fallbackRecognizer.startListening(intent)
-    }
-
-    private fun errorMessage(error: Int): String = when (error) {
+    private fun errorMessage(error: Int, online: Boolean): String = when (error) {
         SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
-        SpeechRecognizer.ERROR_NETWORK -> "Network error — no internet and no offline model available"
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Internet too slow — try again, or use 🎙️ for offline"
+        SpeechRecognizer.ERROR_NETWORK ->
+            if (online) "Network error — check your internet, or use 🎙️ for offline"
+            else "No offline speech model installed — download one in Settings → Languages & input → Voice input"
+        SpeechRecognizer.ERROR_SERVER -> "Speech server error — try again in a moment"
         SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission not granted"
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy — try again"
         else -> "Speech recognition error ($error)"
     }
-/**
-     * Stops the current session immediately and reports it as no longer
-     * listening — call this from a "tap to stop" button, since simply
-     * calling stopListening() doesn't always trigger onResults/onEndOfSpeech
-     * promptly on every device.
+
+    /**
+     * Cancels immediately and reports not-listening. Plain stopListening()
+     * doesn't always trigger a callback promptly on every device.
      */
     fun forceStop(onListeningStateChanged: (Boolean) -> Unit) {
         recognizer?.apply {
@@ -210,12 +191,4 @@ class StreamingSpeechHelper(private val context: Context) {
         recognizer = null
         isListening = false
     }
-   /* fun stop() {
-        recognizer?.apply {
-            try { stopListening() } catch (e: Exception) { /* ignore */ }
-            destroy()
-        }
-        recognizer = null
-        isListening = false
-    }*/
 }
