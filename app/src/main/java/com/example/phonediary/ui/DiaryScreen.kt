@@ -65,6 +65,7 @@ import com.example.phonediary.files.AttachmentCleanup
 import com.example.phonediary.files.SubNoteManager
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.example.phonediary.ai.GeminiKeyStore
+import com.example.phonediary.ai.GeminiModelStore
 
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -1495,6 +1496,11 @@ private fun SettingsPanel(
     val scope = rememberCoroutineScope()
     var geminiKeyInput by remember { mutableStateOf("") }
     var geminiKeyTick by remember { mutableStateOf(0) }
+    val modelInUse = remember(geminiKeyTick) { GeminiModelStore.get(context) }
+        Text(
+            if (modelInUse != null) "Model: $modelInUse" else "Model: chosen automatically on first Generate",
+            style = MaterialTheme.typography.bodySmall
+        )
 
     // Bumped whenever the app resumes or a system settings screen returns,
     // forcing every permission/status check below to re-run.
@@ -1710,6 +1716,7 @@ private fun SettingsPanel(
                 enabled = geminiKeyInput.isNotBlank(),
                 onClick = {
                     GeminiKeyStore.save(context, geminiKeyInput)
+                    GeminiModelStore.clear(context)
                     geminiKeyInput = ""
                     geminiKeyTick++
                 }
@@ -1718,6 +1725,7 @@ private fun SettingsPanel(
             if (keyHint != null) {
                 OutlinedButton(onClick = {
                     GeminiKeyStore.clear(context)
+                    GeminiModelStore.clear(context)
                     geminiKeyTick++
                 }) { Text("Remove key") }
             }
