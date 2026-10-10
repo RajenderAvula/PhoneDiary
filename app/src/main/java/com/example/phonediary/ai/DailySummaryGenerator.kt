@@ -95,6 +95,7 @@ object DailySummaryGenerator {
             ?: return Result.failure(Exception("Add your Gemini API key in the Settings tab first."))
         val prompt = input.prompt
             ?: return Result.failure(Exception("Nothing was logged on $dateKey, so there is nothing to summarize."))
-        return GeminiClient.generate(key, SYSTEM_PROMPT, prompt)
+       // return GeminiClient.generate(key, SYSTEM_PROMPT, prompt)
+       return GeminiClient.generate(context, key, SYSTEM_PROMPT, prompt)
     }
 }
