@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Locale
+import com.example.phonediary.files.TimeStampManager
 
 object DailySummaryGenerator {
 
@@ -73,7 +74,13 @@ object DailySummaryGenerator {
 
     private fun describeNote(e: LogEntry, timeFmt: SimpleDateFormat): String {
         val body = markerRegex.replace(e.note.orEmpty()) { m ->
-            if (m.groupValues[1] == SubNoteManager.TYPE) "(sub-note: ${SubNoteManager.displayLabel(m.groupValues[2])})" else ""
+           // if (m.groupValues[1] == SubNoteManager.TYPE) "(sub-note: ${SubNoteManager.displayLabel(m.groupValues[2])})" else ""
+      when (m.groupValues[1]) {
+                SubNoteManager.TYPE -> "(sub-note: ${SubNoteManager.displayLabel(m.groupValues[2])})"
+                TimeStampManager.TYPE -> TimeStampManager.displayText(m.groupValues[2])
+                else -> ""
+      }
+        
         }.replace(Regex("\\s+"), " ").trim().take(MAX_NOTE_CHARS)
 
         val parts = mutableListOf<String>()
