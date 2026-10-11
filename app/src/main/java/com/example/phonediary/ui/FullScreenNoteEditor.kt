@@ -7,10 +7,9 @@ import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
-import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,6 +39,7 @@ import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
 import com.example.phonediary.files.SubNoteManager
 import com.example.phonediary.files.TextScanHelper
+import com.example.phonediary.files.TimeStampManager
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.GeofenceHelper
 import com.example.phonediary.reminders.GeofenceStatusStore
@@ -65,6 +65,9 @@ data class FullScreenNoteResult(
 
 /** Which sub-note the nested editor is showing. entry == null means a brand-new, unsaved sub-note. */
 private class SubEditorTarget(val entry: LogEntry?)
+
+/** The timestamp stamp being edited: its current marker label plus the time/format to start from. */
+private class StampTarget(val oldLabel: String, val millis: Long, val format: String)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -169,6 +172,10 @@ fun FullScreenNoteEditor(
     var showScribblePad by remember { mutableStateOf(false) }
     var isScanningText by remember { mutableStateOf(false) }
     var isViewMode by remember { mutableStateOf(false) }
+
+    // ---- Note box scrolling + timestamp stamps ----
+    var wrapLines by remember { mutableStateOf(NoteBoxPrefs.wrapLines(context)) }
+    var stampEditor by remember { mutableStateOf<StampTarget?>(null) }
 
     // ---- Sub-notes ----
     val initialSubIds = remember { SubNoteManager.idsIn(initialText) }
@@ -340,11 +347,16 @@ fun FullScreenNoteEditor(
     }
 
     fun handleMarkerClick(type: String, name: String) {
-        if (type == SubNoteManager.TYPE) {
-            val id = SubNoteManager.parseId(name)
-            if (id != null) openSubNote(id) else subNoteNotice = "That sub-note link is damaged"
-        } else {
-            openMarkerAttachment(name)
+        when (type) {
+            TimeStampManager.TYPE -> {
+                val stamp = TimeStampManager.parse(name)
+                if (stamp != null) stampEditor = StampTarget(name, stamp.millis, stamp.format)
+            }
+            SubNoteManager.TYPE -> {
+                val id = SubNoteManager.parseId(name)
+                if (id != null) openSubNote(id) else subNoteNotice = "That sub-note link is damaged"
+            }
+            else -> openMarkerAttachment(name)
         }
     }
 
@@ -519,7 +531,7 @@ fun FullScreenNoteEditor(
                         NoteShareHelper.shareFields(
                             context = context,
                             title = title.ifBlank { null },
-                            note = textFieldValue.text.ifBlank { null },
+                            note = TimeStampManager.toPlainText(textFieldValue.text).ifBlank { null },
                             timestampMillis = noteDateTimeMillis ?: System.currentTimeMillis(),
                             locationUrl = locationUrl.ifBlank { null },
                             tags = tags,
@@ -533,7 +545,7 @@ fun FullScreenNoteEditor(
                         NotePrintHelper.printNote(
                             context = context,
                             title = title.ifBlank { "Phone Diary Note" },
-                            noteText = textFieldValue.text,
+                            noteText = TimeStampManager.toPlainText(textFieldValue.text),
                             tags = tags,
                             locationUrl = locationUrl.ifBlank { null },
                             reminderAtMillis = reminderAtMillis,
@@ -598,7 +610,7 @@ fun FullScreenNoteEditor(
                 Spacer(Modifier.height(4.dp))
             }
 
-            // ---- View / Edit toggle for the note box ----
+            // ---- View / Edit toggle, plus the wrap / scroll-sideways toggle ----
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -609,35 +621,51 @@ fun FullScreenNoteEditor(
                     FilterChip(selected = !isViewMode, onClick = { isViewMode = false }, label = { Text("Edit") })
                     Spacer(Modifier.width(6.dp))
                     FilterChip(selected = isViewMode, onClick = { isViewMode = true }, label = { Text("View") })
+                    Spacer(Modifier.width(6.dp))
+                    FilterChip(
+                        selected = !wrapLines,
+                        onClick = {
+                            wrapLines = !wrapLines
+                            NoteBoxPrefs.setWrapLines(context, wrapLines)
+                        },
+                        label = { Text("↔") }
+                    )
                 }
+            }
+            if (!wrapLines) {
+                Text(
+                    "↔ Long lines don't wrap — scroll sideways. Tap ↔ to wrap again.",
+                    style = MaterialTheme.typography.labelSmall
+                )
             }
             Spacer(Modifier.height(4.dp))
 
             if (isViewMode) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp))
-                        .padding(12.dp)
-                ) {
+                ScrollableNoteBox(wrapLines = wrapLines) { minWidth ->
                     NoteViewRenderer(
                         text = textFieldValue.text,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.widthIn(min = minWidth),
+                        wrap = wrapLines,
                         onMarkerClick = { type, name -> handleMarkerClick(type, name) }
                     )
                 }
             } else {
-                MarkerTextField(
-                    value = textFieldValue,
-                    onValueChange = { textFieldValue = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholderText = "Write your note…",
-                    minLines = 6,
-                    maxLines = 14,
-                    onMarkerClick = { type, name -> handleMarkerClick(type, name) }
-                )
+                ScrollableNoteBox(wrapLines = wrapLines) { minWidth ->
+                    MarkerTextField(
+                        value = textFieldValue,
+                        onValueChange = { textFieldValue = it },
+                        modifier = Modifier.widthIn(min = minWidth),
+                        placeholderText = "Write your note…",
+                        minLines = 6,
+                        softWrap = wrapLines,
+                        onMarkerClick = { type, name -> handleMarkerClick(type, name) }
+                    )
+                }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     IconButton(onClick = { startOneShotSpeech() }) {
                         Text(if (isOneShotListening) "🔴" else "🎤")
                     }
@@ -650,6 +678,12 @@ fun FullScreenNoteEditor(
                     IconButton(onClick = { insertImageLauncher.launch("image/*") }) { Text("🖼") }
                     IconButton(onClick = { attachFileLauncher.launch(arrayOf("*/*")) }) { Text("🔗") }
                     IconButton(onClick = { showScribblePad = true }) { Text("✍") }
+                    // Inserts the current date & time at the cursor; tap the stamp to edit it.
+                    IconButton(onClick = {
+                        insertAtCursor(
+                            TimeStampManager.marker(System.currentTimeMillis(), TimeStampManager.lastFormat(context))
+                        )
+                    }) { Text("🕒") }
                     if (!isLocationNote) {
                         IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
                     }
@@ -886,6 +920,32 @@ fun FullScreenNoteEditor(
                 showScribblePad = false
             },
             onCancel = { showScribblePad = false }
+        )
+    }
+
+    // ---- Edit / delete one timestamp stamp ----
+    stampEditor?.let { target ->
+        TimeStampDialog(
+            initialMillis = target.millis,
+            initialFormat = target.format,
+            onApply = { millis, format, applyToAll ->
+                val key = TimeStampManager.parse(target.oldLabel)?.key
+                var text = TimeStampManager.replaceStamp(
+                    textFieldValue.text, target.oldLabel, TimeStampManager.marker(millis, format, key)
+                )
+                if (applyToAll) text = TimeStampManager.restyleAll(text, format)
+                val cursor = textFieldValue.selection.start.coerceIn(0, text.length)
+                textFieldValue = TextFieldValue(text, selection = TextRange(cursor))
+                TimeStampManager.saveLastFormat(context, format)
+                stampEditor = null
+            },
+            onDelete = {
+                val text = TimeStampManager.replaceStamp(textFieldValue.text, target.oldLabel, "")
+                val cursor = textFieldValue.selection.start.coerceIn(0, text.length)
+                textFieldValue = TextFieldValue(text, selection = TextRange(cursor))
+                stampEditor = null
+            },
+            onDismiss = { stampEditor = null }
         )
     }
 
