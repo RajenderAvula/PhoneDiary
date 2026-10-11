@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.AttachmentListUtil
+import com.example.phonediary.data.LocationReminderItem
 import com.example.phonediary.data.LocationReminderListUtil
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.reminders.GeofenceHelper
@@ -21,7 +22,8 @@ import java.util.Locale
 
 /**
  * Sub-notes are ordinary LogEntry rows with source = "sub_note", linked from
- * their parent's text by a marker:  🗒[note: Title #<id>]
+ * a note's text (or a location reminder's note text) by a marker:
+ *   🗒[note: Title #<id>]
  * Because they are real notes they get every note feature for free.
  */
 object SubNoteManager {
@@ -29,6 +31,7 @@ object SubNoteManager {
     const val SOURCE = "sub_note"
     const val TYPE = "note"
     private const val EMOJI = "🗒"
+    private const val ORPHAN_MIN_AGE_MILLIS = 30 * 60 * 1000L
 
     private val idAtEnd = Regex("""#(\d+)\s*$""")
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -55,6 +58,14 @@ object SubNoteManager {
             .toSet()
     }
 
+    /** Sub-note ids linked from the notes of these location reminders. */
+    fun idsInItems(items: List<LocationReminderItem>): Set<Long> =
+        items.flatMapTo(mutableSetOf()) { idsIn(it.text) }
+
+    /** Every sub-note a note owns: links in its own text plus links inside its location reminders' notes. */
+    fun idsInEntry(entry: LogEntry): Set<Long> =
+        idsIn(entry.note) + idsInItems(LocationReminderListUtil.fromStored(entry.locationReminders))
+
     /** Rewrites sub-note ids inside text after a restore assigned new ids. */
     fun remapIds(text: String?, idMap: Map<Long, Long>): String? {
         if (text.isNullOrEmpty() || idMap.isEmpty()) return text
@@ -64,6 +75,19 @@ object SubNoteManager {
             val newId = idMap[oldId] ?: return@replace m.value
             m.value.substringBeforeLast('#') + "#$newId]"
         }
+    }
+
+    /** Same remap for the sub-note links stored inside location reminders. */
+    fun remapLocationReminders(stored: String?, idMap: Map<Long, Long>): String? {
+        if (stored.isNullOrBlank() || idMap.isEmpty()) return stored
+        val items = LocationReminderListUtil.fromStored(stored)
+        if (items.isEmpty()) return stored
+        var changed = false
+        val remapped = items.map { item ->
+            val newText = remapIds(item.text, idMap) ?: item.text
+            if (newText != item.text) { changed = true; item.copy(text = newText) } else item
+        }
+        return if (changed) LocationReminderListUtil.toStored(remapped) else stored
     }
 
     /** Text with sub-note ids stripped, so a restored note still matches its backup copy. */
@@ -140,7 +164,7 @@ object SubNoteManager {
 
     // ---------------------------------------------------------------- delete
 
-    /** Deletes the given sub-notes and, recursively, any sub-notes inside them. */
+    /** Deletes the given sub-notes and, recursively, any sub-notes inside them (text and location notes). */
     suspend fun deleteWithCascade(context: Context, ids: Collection<Long>) = withContext(Dispatchers.IO) {
         val dao = AppDatabase.getInstance(context).logEntryDao()
         val attachmentNames = mutableSetOf<String>()
@@ -162,7 +186,7 @@ object SubNoteManager {
             )
             CalendarWriter.deleteEntryEvent(context, id)
             attachmentNames += AttachmentCleanup.namesOf(entry)
-            queue.addAll(idsIn(entry.note))
+            queue.addAll(idsInEntry(entry))
             dao.delete(entry)
         }
         AttachmentCleanup.deleteIfUnreferenced(context, attachmentNames)
@@ -174,9 +198,21 @@ object SubNoteManager {
         if (ids.isNotEmpty()) deleteWithCascade(context, ids)
     }
 
+    /** Deletes every sub-note a note owns, including those inside its location reminders' notes. */
+    suspend fun deleteAllInEntry(context: Context, entry: LogEntry) {
+        val ids = idsInEntry(entry)
+        if (ids.isNotEmpty()) deleteWithCascade(context, ids)
+    }
+
     /** Deletes sub-notes whose links were removed between the old and new text. */
     suspend fun deleteRemoved(context: Context, oldText: String?, newText: String?) {
         val removed = idsIn(oldText) - idsIn(newText)
+        if (removed.isNotEmpty()) deleteWithCascade(context, removed)
+    }
+
+    /** Same, comparing the whole old and new note, location reminders included. */
+    suspend fun deleteRemovedBetween(context: Context, old: LogEntry, new: LogEntry) {
+        val removed = idsInEntry(old) - idsInEntry(new)
         if (removed.isNotEmpty()) deleteWithCascade(context, removed)
     }
 
@@ -186,5 +222,22 @@ object SubNoteManager {
         val copy = ids.toList()
         if (copy.isEmpty()) return
         cleanupScope.launch { deleteWithCascade(app, copy) }
+    }
+
+    // ----------------------------------------------------------------- orphans
+
+    /** Sub-notes that no note, sub-note or location reminder links to (older than 30 minutes). */
+    suspend fun findOrphans(context: Context): List<Long> = withContext(Dispatchers.IO) {
+        val all = AppDatabase.getInstance(context).logEntryDao().getAllEntries()
+        val referenced = mutableSetOf<Long>()
+        all.forEach { referenced += idsInEntry(it) }
+        val cutoff = System.currentTimeMillis() - ORPHAN_MIN_AGE_MILLIS
+        all.filter { it.source == SOURCE && it.id !in referenced && it.lastModifiedMillis < cutoff }.map { it.id }
+    }
+
+    suspend fun deleteOrphans(context: Context): Int {
+        val ids = findOrphans(context)
+        if (ids.isNotEmpty()) deleteWithCascade(context, ids)
+        return ids.size
     }
 }
