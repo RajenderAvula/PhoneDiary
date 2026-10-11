@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.phonediary.data.LocationReminderItem
+import com.example.phonediary.files.SubNoteManager
 
 /** Moves every selected item one step up, keeping their relative order. */
 private fun moveUp(list: List<LocationReminderItem>, selected: Set<String>): List<LocationReminderItem> {
@@ -146,6 +147,13 @@ fun LocationReminderSection(
                             "📝 " + listOf(preview, extras).filter { it.isNotBlank() }.joinToString(" — "),
                             style = MaterialTheme.typography.labelSmall
                         )
+                    }
+
+                  //  if (item.enabled) {
+                        //when (registrationStatus[item.id]) {
+                        val subNoteCount = SubNoteManager.idsIn(item.text).size
+                    if (subNoteCount > 0) {
+                        Text("🗒 $subNoteCount sub-note(s)", style = MaterialTheme.typography.labelSmall)
                     }
 
                     if (item.enabled) {
@@ -286,7 +294,11 @@ fun LocationReminderSection(
     // ---- Confirm before removing (a location can now hold a note) ----
     confirmRemoveItem?.let { item ->
         ConfirmDeleteDialog(
-            message = "Remove \"${item.label}\" and its note? This cannot be undone.",
+           // message = "Remove \"${item.label}\" and its note? This cannot be undone.",
+            message = "Remove \"${item.label}\" and its note" +
+                SubNoteManager.idsIn(item.text).size.let {
+                    if (it > 0) ", including $it sub-note(s) (deleted when you save)" else ""
+                } + "? This cannot be undone.",
             onConfirm = {
                 onItemsChanged(items.filterNot { it.id == item.id })
                 confirmRemoveItem = null
