@@ -11,16 +11,18 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import com.example.phonediary.files.SubNoteManager
+import com.example.phonediary.files.TimeStampManager
 
 /**
- * Read-only rendering of note text: markers show as an icon plus readable
- * label (never raw brackets) and are tappable. onMarkerClick receives the
- * marker type ("image", "file", "drawing", "note") and its raw label.
+ * Read-only rendering: markers show as an icon plus a readable label (never
+ * raw brackets) and are tappable. onMarkerClick gets the marker type
+ * ("image", "file", "drawing", "note", "time") and its raw label.
  */
 @Composable
 fun NoteViewRenderer(
     text: String,
     modifier: Modifier = Modifier,
+    wrap: Boolean = true,
     onMarkerClick: (type: String, name: String) -> Unit
 ) {
     val markerColor = MaterialTheme.colorScheme.primary
@@ -36,9 +38,14 @@ fun NoteViewRenderer(
                 "image" -> "🖼"
                 "drawing" -> "✍"
                 SubNoteManager.TYPE -> "🗒"
+                TimeStampManager.TYPE -> "🕒"
                 else -> "🔗"
             }
-            val shown = if (type == SubNoteManager.TYPE) SubNoteManager.displayLabel(label) else label
+            val shown = when (type) {
+                SubNoteManager.TYPE -> SubNoteManager.displayLabel(label)
+                TimeStampManager.TYPE -> TimeStampManager.displayText(label)
+                else -> label
+            }
             builder.pushStringAnnotation("marker", "$type|$label")
             builder.withStyle(SpanStyle(color = markerColor, textDecoration = TextDecoration.Underline)) {
                 append("$icon $shown")
@@ -54,6 +61,7 @@ fun NoteViewRenderer(
         text = annotated,
         modifier = modifier,
         style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+        softWrap = wrap,
         onClick = { offset ->
             annotated.getStringAnnotations("marker", offset, offset).firstOrNull()?.let { annotation ->
                 val parts = annotation.item.split("|", limit = 2)
