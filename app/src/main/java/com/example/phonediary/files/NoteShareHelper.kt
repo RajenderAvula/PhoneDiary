@@ -13,8 +13,9 @@ object NoteShareHelper {
     fun shareNote(context: Context, entry: LogEntry) {
         shareFields(
             context = context,
-            title = entry.title,
-            note = entry.note,
+           title = entry.title,
+            note = entry.note?.let { TimeStampManager.toPlainText(it) },
+           // note = entry.note,
             timestampMillis = entry.timestampMillis,
             locationUrl = entry.locationUrl,
             tags = AttachmentListUtil.toList(entry.tags),
