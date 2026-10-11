@@ -159,9 +159,14 @@ object RestoreHelper {
 
             // ---- Point every restored sub-note link at its new id ----
             restoredNew.forEach { (newId, restored) ->
-                val remapped = SubNoteManager.remapIds(restored.note, idMap)
+              /*  val remapped = SubNoteManager.remapIds(restored.note, idMap)
                 if (remapped != restored.note) {
                     dao.update(restored.copy(id = newId, note = remapped))
+                }*/
+                val remappedNote = SubNoteManager.remapIds(restored.note, idMap)
+                val remappedLocations = SubNoteManager.remapLocationReminders(restored.locationReminders, idMap)
+                if (remappedNote != restored.note || remappedLocations != restored.locationReminders) {
+                    dao.update(restored.copy(id = newId, note = remappedNote, locationReminders = remappedLocations))
                 }
             }
 
