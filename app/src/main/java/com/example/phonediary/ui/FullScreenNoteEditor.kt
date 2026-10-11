@@ -178,7 +178,16 @@ fun FullScreenNoteEditor(
     var stampEditor by remember { mutableStateOf<StampTarget?>(null) }
 
     // ---- Sub-notes ----
-    val initialSubIds = remember { SubNoteManager.idsIn(initialText) }
+   // val initialSubIds = remember { SubNoteManager.idsIn(initialText) }
+   // Every sub-note this note owns: links in its own text, plus (for a normal note)
+    // links inside the notes of its location reminders.
+    val initialSubIds = remember {
+        SubNoteManager.idsIn(initialText) +
+            (if (isLocationNote) emptySet() else SubNoteManager.idsInItems(initialLocationReminders))
+    }
+    fun allSubIds(): Set<Long> =
+        SubNoteManager.idsIn(textFieldValue.text) +
+            (if (isLocationNote) emptySet() else SubNoteManager.idsInItems(locationReminders))
     // Sub-notes created in this editing session; removed again if this editor is cancelled.
     val sessionCreatedSubIds = remember { mutableSetOf<Long>() }
     var subEditor by remember { mutableStateOf<SubEditorTarget?>(null) }
@@ -293,15 +302,30 @@ fun FullScreenNoteEditor(
             (sessionAddedNames - initialNames) + newLocationNames
         )
         // Sub-notes created in this session were saved to the database already — remove them.
-        SubNoteManager.launchDeleteWithCascade(context, sessionCreatedSubIds.toSet())
+       // SubNoteManager.launchDeleteWithCascade(context, sessionCreatedSubIds.toSet())
+       // onCancel()
+       // Sub-notes created in this session were saved to the database already — remove them.
+        // For a normal note that includes ones created inside its location reminders' notes.
+        SubNoteManager.launchDeleteWithCascade(
+            context,
+            sessionCreatedSubIds.toSet() + (allSubIds() - initialSubIds)
+        )
         onCancel()
     }
 
     fun performSave(removedSubIds: Set<Long>) {
-        val finalSubIds = SubNoteManager.idsIn(textFieldValue.text)
+        //val finalSubIds = SubNoteManager.idsIn(textFieldValue.text)
+        //SubNoteManager.launchDeleteWithCascade(
+         //   context,
+           // removedSubIds + (sessionCreatedSubIds - finalSubIds)
+       // )
+
+        val finalSubIds = allSubIds()
+        // A location note leaves removed sub-notes alone: it lives inside its parent
+        // note, which isn't saved yet. The parent deletes them when it is saved.
         SubNoteManager.launchDeleteWithCascade(
             context,
-            removedSubIds + (sessionCreatedSubIds - finalSubIds)
+            (if (isLocationNote) emptySet() else removedSubIds) + (sessionCreatedSubIds - finalSubIds)
         )
         // Files added this session but removed before saving are never referenced
         // by anything — delete them now. (The check against other notes happens
@@ -556,8 +580,10 @@ fun FullScreenNoteEditor(
                     }) { Text("🖨") }
                     TextButton(onClick = {
                         // Sub-notes whose links were deleted are removed on save, after confirming.
-                        val removed = initialSubIds - SubNoteManager.idsIn(textFieldValue.text)
-                        if (removed.isNotEmpty()) confirmSubDelete = removed else performSave(emptySet())
+                       // val removed = initialSubIds - SubNoteManager.idsIn(textFieldValue.text)
+                       // if (removed.isNotEmpty()) confirmSubDelete = removed else performSave(emptySet())
+                        val removed = initialSubIds - allSubIds()
+                        if (removed.isNotEmpty() && !isLocationNote) confirmSubDelete = removed else performSave(emptySet())
                     }) { Text("Save") }
                 }
             )
@@ -684,8 +710,9 @@ fun FullScreenNoteEditor(
                             TimeStampManager.marker(System.currentTimeMillis(), TimeStampManager.lastFormat(context))
                         )
                     }) { Text("🕒") }
-                    if (!isLocationNote) {
-                        IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
+                  //  if (!isLocationNote) {
+                      //  IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
+                      IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
                     }
                 }
             }
@@ -702,7 +729,9 @@ fun FullScreenNoteEditor(
             }
 
             // ---- Sub-notes ----
-            if (!isLocationNote) {
+           // if (!isLocationNote) {
+           // ---- Sub-notes (normal notes and location reminder notes) ----
+            run {
                 Spacer(Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
