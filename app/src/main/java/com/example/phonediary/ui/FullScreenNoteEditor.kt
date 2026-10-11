@@ -86,8 +86,8 @@ fun FullScreenNoteEditor(
     /**
      * True when this editor is editing the note that belongs to one location
      * reminder. The location itself is the trigger, so note date/time,
-     * Reminder, Due, nested location reminders and sub-notes are hidden, and
-     * Repeat means "repeat while I'm inside this location".
+     * Reminder, Due and nested location reminders are hidden, and Repeat
+     * means "repeat while I'm inside this location". Sub-notes ARE available.
      */
     isLocationNote: Boolean = false,
     locationNoteName: String = "",
@@ -178,8 +178,7 @@ fun FullScreenNoteEditor(
     var stampEditor by remember { mutableStateOf<StampTarget?>(null) }
 
     // ---- Sub-notes ----
-   // val initialSubIds = remember { SubNoteManager.idsIn(initialText) }
-   // Every sub-note this note owns: links in its own text, plus (for a normal note)
+    // Every sub-note this note owns: links in its own text, plus (for a normal note)
     // links inside the notes of its location reminders.
     val initialSubIds = remember {
         SubNoteManager.idsIn(initialText) +
@@ -188,6 +187,7 @@ fun FullScreenNoteEditor(
     fun allSubIds(): Set<Long> =
         SubNoteManager.idsIn(textFieldValue.text) +
             (if (isLocationNote) emptySet() else SubNoteManager.idsInItems(locationReminders))
+
     // Sub-notes created in this editing session; removed again if this editor is cancelled.
     val sessionCreatedSubIds = remember { mutableSetOf<Long>() }
     var subEditor by remember { mutableStateOf<SubEditorTarget?>(null) }
@@ -282,7 +282,7 @@ fun FullScreenNoteEditor(
         }
     }
 
-    /** Removes a sub-note's link from the text. The sub-note itself is deleted when this note is saved. */
+    /** Removes a sub-note's link from the text. The sub-note itself is deleted when the parent note is saved. */
     fun removeSubNoteLink(id: Long) {
         val stripped = markerRegex.replace(textFieldValue.text) { m ->
             if (m.groupValues[1] == SubNoteManager.TYPE && SubNoteManager.parseId(m.groupValues[2]) == id) "" else m.value
@@ -302,9 +302,6 @@ fun FullScreenNoteEditor(
             (sessionAddedNames - initialNames) + newLocationNames
         )
         // Sub-notes created in this session were saved to the database already — remove them.
-       // SubNoteManager.launchDeleteWithCascade(context, sessionCreatedSubIds.toSet())
-       // onCancel()
-       // Sub-notes created in this session were saved to the database already — remove them.
         // For a normal note that includes ones created inside its location reminders' notes.
         SubNoteManager.launchDeleteWithCascade(
             context,
@@ -314,12 +311,6 @@ fun FullScreenNoteEditor(
     }
 
     fun performSave(removedSubIds: Set<Long>) {
-        //val finalSubIds = SubNoteManager.idsIn(textFieldValue.text)
-        //SubNoteManager.launchDeleteWithCascade(
-         //   context,
-           // removedSubIds + (sessionCreatedSubIds - finalSubIds)
-       // )
-
         val finalSubIds = allSubIds()
         // A location note leaves removed sub-notes alone: it lives inside its parent
         // note, which isn't saved yet. The parent deletes them when it is saved.
@@ -580,8 +571,7 @@ fun FullScreenNoteEditor(
                     }) { Text("🖨") }
                     TextButton(onClick = {
                         // Sub-notes whose links were deleted are removed on save, after confirming.
-                       // val removed = initialSubIds - SubNoteManager.idsIn(textFieldValue.text)
-                       // if (removed.isNotEmpty()) confirmSubDelete = removed else performSave(emptySet())
+                        // A location note skips this: its parent note deletes them when it is saved.
                         val removed = initialSubIds - allSubIds()
                         if (removed.isNotEmpty() && !isLocationNote) confirmSubDelete = removed else performSave(emptySet())
                     }) { Text("Save") }
@@ -710,10 +700,7 @@ fun FullScreenNoteEditor(
                             TimeStampManager.marker(System.currentTimeMillis(), TimeStampManager.lastFormat(context))
                         )
                     }) { Text("🕒") }
-                  //  if (!isLocationNote) {
-                      //  IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
-                      IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
-                    }
+                    IconButton(onClick = { openSubNote(null) }) { Text("🗒") }
                 }
             }
 
@@ -728,43 +715,39 @@ fun FullScreenNoteEditor(
                 Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
 
-            // ---- Sub-notes ----
-           // if (!isLocationNote) {
-           // ---- Sub-notes (normal notes and location reminder notes) ----
-            run {
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
-                    OutlinedButton(onClick = { openSubNote(null) }) { Text("+ Sub-note") }
-                }
-                if (subNoteIds.isEmpty()) {
-                    Text(
-                        "None yet — a sub-note is a clickable note inside this one, with all the same features.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                subNoteIds.forEach { id ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = { openSubNote(id) }
-                        ) {
-                            Text(
-                                "🗒 ${subNoteTitles[id] ?: "…"}",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
+            // ---- Sub-notes (normal notes and location reminder notes) ----
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
+                OutlinedButton(onClick = { openSubNote(null) }) { Text("+ Sub-note") }
+            }
+            if (subNoteIds.isEmpty()) {
+                Text(
+                    "None yet — a sub-note is a clickable note inside this one, with all the same features.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            subNoteIds.forEach { id ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { openSubNote(id) }
+                    ) {
+                        Text(
+                            "🗒 ${subNoteTitles[id] ?: "…"}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
+                    TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
                 }
-                subNoteNotice?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                }
+            }
+            subNoteNotice?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
 
             Spacer(Modifier.height(12.dp))
