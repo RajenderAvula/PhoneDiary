@@ -512,7 +512,8 @@ private fun HomeTabContent() {
                 GeofenceHelper.removeAllGeofencesForEntry(context, it.id, LocationReminderListUtil.fromStored(it.locationReminders))
                 CalendarWriter.deleteEntryEvent(context, it.id)
                 removedNames += AttachmentCleanup.namesOf(it)
-                SubNoteManager.deleteAllIn(context, it.note)
+               // SubNoteManager.deleteAllIn(context, it.note)
+               SubNoteManager.deleteAllInEntry(context, it)
                 dao.delete(it)
             }
             AttachmentCleanup.deleteIfUnreferenced(context, removedNames)
@@ -529,7 +530,8 @@ private fun HomeTabContent() {
             NoteReminderScheduler.cancelRepeat(context, entry.id)
             GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, LocationReminderListUtil.fromStored(entry.locationReminders))
             CalendarWriter.deleteEntryEvent(context, entry.id)
-            SubNoteManager.deleteAllIn(context, entry.note)
+          //  SubNoteManager.deleteAllIn(context, entry.note)
+          SubNoteManager.deleteAllInEntry(context, entry)
             AppDatabase.getInstance(context).logEntryDao().delete(entry)
             AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry))
             openDate(dateKey)
@@ -933,8 +935,14 @@ private fun HomeTabContent() {
             }) { Text("Save entry") }
             Spacer(Modifier.width(8.dp))
             //OutlinedButton(onClick = { resetMainEntryFields() }) { Text("Cancel") }
-            OutlinedButton(onClick = {
+           /* OutlinedButton(onClick = {
     AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
+    resetMainEntryFields()
+}) { Text("Cancel") }*/
+OutlinedButton(onClick = {
+    AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
+    // Sub-notes created inside this draft's location notes are saved already — remove them.
+    SubNoteManager.launchDeleteWithCascade(context, SubNoteManager.idsInItems(mainLocationReminders))
     resetMainEntryFields()
 }) { Text("Cancel") }
         }
@@ -1103,7 +1111,8 @@ private fun HomeTabContent() {
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
-                                        SubNoteManager.deleteRemoved(context, entry.note, updated.note)
+                                       // SubNoteManager.deleteRemoved(context, entry.note, updated.note)
+                                        SubNoteManager.deleteRemovedBetween(context, entry, updated)
                                         AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated))
                                         NoteReminderScheduler.cancelReminder(context, entry.id)
                                         NoteReminderScheduler.cancelDue(context, entry.id)
@@ -1134,7 +1143,14 @@ private fun HomeTabContent() {
                                         openDate(date)
                                     }
                                 }) { Text("Save") }
-                                TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
+                               // TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
+                               TextButton(onClick = {
+                                    SubNoteManager.launchDeleteWithCascade(
+                                        context,
+                                        SubNoteManager.idsInItems(editingLocationReminders) - SubNoteManager.idsInEntry(entry)
+                                    )
+                                    editingEntryId = null
+                                }) { Text("Cancel") }
                             }
                         }
                     } else {
@@ -1508,6 +1524,7 @@ private fun SettingsPanel(
     var refreshTick by remember { mutableStateOf(0) }
     var unusedFiles by remember { mutableStateOf<List<String>?>(null) }
     var cleanupStatus by remember { mutableStateOf<String?>(null) }
+    var orphanSubNotes by remember { mutableStateOf<Int?>(null) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -1693,6 +1710,26 @@ private fun SettingsPanel(
                     }
                 },
                 onDismiss = { unusedFiles = null }
+            )
+        }
+        OutlinedButton(onClick = {
+            scope.launch {
+                val n = SubNoteManager.findOrphans(context).size
+                if (n == 0) { cleanupStatus = "No unused sub-notes found" } else { orphanSubNotes = n }
+            }
+        }) { Text("Find unused sub-notes") }
+
+        orphanSubNotes?.let { n ->
+            ConfirmDeleteDialog(
+                message = "$n sub-note(s) aren't linked from any note. Save or cancel any note you have open first. Delete them?",
+                onConfirm = {
+                    orphanSubNotes = null
+                    scope.launch {
+                        val deleted = SubNoteManager.deleteOrphans(context)
+                        cleanupStatus = "Deleted $deleted unused sub-note(s)"
+                    }
+                },
+                onDismiss = { orphanSubNotes = null }
             )
         }
         Spacer(Modifier.height(12.dp))
