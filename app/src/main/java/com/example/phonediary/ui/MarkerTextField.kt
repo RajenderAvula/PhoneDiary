@@ -85,12 +85,21 @@ fun MarkerTextField(
         if (value.text.isEmpty()) {
             Text(placeholderText, color = placeholderColor, style = LocalTextStyle.current)
         }
-        BasicTextField(
+        /*BasicTextField(
             value = value,
             onValueChange = ::handleValueChange,
             modifier = Modifier.fillMaxWidth(),
             minLines = minLines,
             softWrap = softWrap,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+            visualTransformation = markerTransformation,
+            cursorBrush = SolidColor(markerColor)
+        )*/
+        BasicTextField(
+            value = value,
+            onValueChange = ::handleValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            minLines = minLines,
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
             visualTransformation = markerTransformation,
             cursorBrush = SolidColor(markerColor)
