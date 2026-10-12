@@ -68,6 +68,7 @@ import com.example.phonediary.ai.GeminiKeyStore
 import com.example.phonediary.ai.GeminiModelStore
 
 
+//private enum class DiaryTab { HOME, SETTINGS }
 private enum class DiaryTab { HOME, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
@@ -98,6 +99,12 @@ fun DiaryScreen(
                     label = { Text("Home") }
                 )
                 NavigationBarItem(
+                    selected = selectedTab == DiaryTab.ASK,
+                    onClick = { selectedTab = DiaryTab.ASK },
+                    icon = { Text("✨") },
+                    label = { Text("Ask AI") }
+                )
+                NavigationBarItem(
                     selected = selectedTab == DiaryTab.SETTINGS,
                     onClick = { selectedTab = DiaryTab.SETTINGS },
                     icon = { Text("⚙") },
@@ -115,6 +122,14 @@ fun DiaryScreen(
                 modifier = if (selectedTab == DiaryTab.HOME) Modifier.fillMaxSize() else Modifier.size(0.dp)
             ) {
                 HomeTabContent()
+            }
+            Box(
+                modifier = if (selectedTab == DiaryTab.ASK) Modifier.fillMaxSize() else Modifier.size(0.dp)
+            ) {
+                AskAiTab(
+                    isVisible = selectedTab == DiaryTab.ASK,
+                    onOpenSettings = { selectedTab = DiaryTab.SETTINGS }
+                )
             }
             Box(
                 modifier = if (selectedTab == DiaryTab.SETTINGS) Modifier.fillMaxSize() else Modifier.size(0.dp)
@@ -1768,10 +1783,16 @@ private fun SettingsPanel(
                 }) { Text("Remove key") }
             }
         }
-        Text(
+      /*  Text(
             "Used only when you tap Generate. The day's notes and app usage are sent to Google to write the summary, " +
                 "so it needs internet. On Google's free tier, submitted content may be used to improve their products. " +
                 "Check Google's terms before sending anything private.",
+            style = MaterialTheme.typography.labelSmall
+        )*/
+        Text(
+            "Used only when you tap Generate or ask a question in Ask AI. The notes and app usage needed to answer " +
+                "are sent to Google, so it needs internet. On Google's free tier, submitted content may be used to " +
+                "improve their products. Check Google's terms before sending anything private.",
             style = MaterialTheme.typography.labelSmall
         )
 
