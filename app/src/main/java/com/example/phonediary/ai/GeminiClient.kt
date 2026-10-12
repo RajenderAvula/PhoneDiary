@@ -39,17 +39,94 @@ object GeminiClient {
     }
 
     private sealed class CallOutcome {
-        class Success(val text: String) : CallOutcome()
+        class Success(val root: JSONObject) : CallOutcome()
         object ModelNotFound : CallOutcome()
         class Failure(val message: String) : CallOutcome()
     }
 
+    class FunctionCall(val name: String, val args: JSONObject)
+
+    /** One model reply: its raw content (to send back verbatim), plain text, and any tool calls. */
+    class ChatTurn(val content: JSONObject, val text: String, val calls: List<FunctionCall>)
+
+    /** Single-prompt convenience used by the daily summary. */
     suspend fun generate(
         context: Context,
         apiKey: String,
         systemPrompt: String,
         userPrompt: String
     ): Result<String> {
+        val contents = JSONArray().put(
+            JSONObject().put("role", "user")
+                .put("parts", JSONArray().put(JSONObject().put("text", userPrompt)))
+        )
+        return chat(context, apiKey, systemPrompt, contents, null).map { it.text }
+    }
+
+    /** One request/response with optional tool declarations. */
+    suspend fun chat(
+        context: Context,
+        apiKey: String,
+        systemPrompt: String,
+        contents: JSONArray,
+        tools: JSONArray?,
+        temperature: Double = 0.4,
+        maxOutputTokens: Int = 4096
+    ): Result<ChatTurn> {
+        val body = JSONObject().apply {
+            put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt))))
+            put("contents", contents)
+            if (tools != null && tools.length() > 0) put("tools", tools)
+            put("generationConfig", JSONObject().put("temperature", temperature).put("maxOutputTokens", maxOutputTokens))
+        }
+        val root = requestWithModelDiscovery(context, apiKey, body).getOrElse { return Result.failure(it) }
+        return parseTurn(root)
+    }
+
+    private fun parseTurn(root: JSONObject): Result<ChatTurn> {
+        val blockReason = root.optJSONObject("promptFeedback")?.optString("blockReason")
+        if (!blockReason.isNullOrBlank()) {
+            return Result.failure(Exception("Gemini blocked this request ($blockReason)."))
+        }
+        val candidate = root.optJSONArray("candidates")?.optJSONObject(0)
+        val content = candidate?.optJSONObject("content")
+        val parts = content?.optJSONArray("parts")
+
+        val text = StringBuilder()
+        val calls = mutableListOf<FunctionCall>()
+        if (parts != null) {
+            for (i in 0 until parts.length()) {
+                val part = parts.optJSONObject(i) ?: continue
+                part.optJSONObject("functionCall")?.let { fc ->
+                    calls += FunctionCall(fc.optString("name"), fc.optJSONObject("args") ?: JSONObject())
+                }
+                if (part.has("text") && !part.optBoolean("thought", false)) text.append(part.optString("text"))
+            }
+        }
+
+        if (text.isBlank() && calls.isEmpty()) {
+            val finish = candidate?.optString("finishReason").orEmpty()
+            return Result.failure(
+                Exception(
+                    when (finish) {
+                        "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT" -> "Gemini declined to answer that."
+                        "MAX_TOKENS" -> "The answer was too long to finish. Try a narrower question."
+                        else -> "Gemini returned an empty answer. Try again."
+                    }
+                )
+            )
+        }
+        // The model's content must be sent back unchanged on the next step (it can carry hidden signatures).
+        val raw = content ?: JSONObject().put("parts", JSONArray())
+        raw.put("role", "model")
+        return Result.success(ChatTurn(raw, text.toString().trim(), calls))
+    }
+
+    private suspend fun requestWithModelDiscovery(
+        context: Context,
+        apiKey: String,
+        body: JSONObject
+    ): Result<JSONObject> {
         val cached = GeminiModelStore.get(context)
         var queue: List<String> = listOfNotNull(cached)
         var discovered = false
@@ -63,24 +140,19 @@ object GeminiClient {
                 discovered = true
                 queue = discoverModels(apiKey).getOrElse { return Result.failure(it) }
                 if (queue.isEmpty()) {
-                    return Result.failure(
-                        Exception("This API key has no Gemini model that supports text generation.")
-                    )
+                    return Result.failure(Exception("This API key has no Gemini model that supports text generation."))
                 }
             }
             val model = queue.first()
             queue = queue.drop(1)
             if (!tried.add(model)) continue
 
-            when (val outcome = call(apiKey, model, systemPrompt, userPrompt)) {
+            when (val outcome = call(apiKey, model, body)) {
                 is CallOutcome.Success -> {
                     GeminiModelStore.save(context, model)
-                    return Result.success(outcome.text)
+                    return Result.success(outcome.root)
                 }
-                CallOutcome.ModelNotFound -> {
-                    // The remembered model is gone. Forget it; the loop moves to the next candidate.
-                    if (model == cached) GeminiModelStore.clear(context)
-                }
+                CallOutcome.ModelNotFound -> if (model == cached) GeminiModelStore.clear(context)
                 is CallOutcome.Failure -> return Result.failure(Exception(outcome.message))
             }
         }
@@ -131,7 +203,7 @@ object GeminiClient {
                     compareByDescending<Candidate> { it.isFlash && !it.isLite }
                         .thenByDescending { it.isStable }
                         .thenByDescending { it.version }
-                        .thenBy { it.name.length }   // shortest name first: the alias beats a dated copy
+                        .thenBy { it.name.length }
                 )
                 .map { it.name }
                 .distinct()
@@ -145,67 +217,45 @@ object GeminiClient {
         }
     }
 
-    private suspend fun call(
-        apiKey: String,
-        model: String,
-        systemPrompt: String,
-        userPrompt: String
-    ): CallOutcome = withContext(Dispatchers.IO) {
-        var connection: HttpURLConnection? = null
-        try {
-            val body = JSONObject().apply {
-                put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt))))
-                put(
-                    "contents",
-                    JSONArray().put(
-                        JSONObject().put("role", "user")
-                            .put("parts", JSONArray().put(JSONObject().put("text", userPrompt)))
-                    )
-                )
-                put("generationConfig", JSONObject().put("temperature", 0.4).put("maxOutputTokens", 4096))
+    private suspend fun call(apiKey: String, model: String, body: JSONObject): CallOutcome =
+        withContext(Dispatchers.IO) {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = (URL("$BASE/models/$model:generateContent").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 15_000
+                    readTimeout = 45_000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    // Sent in a header, not the URL, so it never lands in logs or URLs.
+                    setRequestProperty("x-goog-api-key", apiKey)
+                }
+                connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+                val code = connection.responseCode
+                val text = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+
+                if (code == 404) return@withContext CallOutcome.ModelNotFound
+                if (code !in 200..299) {
+                    val message = apiMessage(text)
+                    // This model can't do something we need (tools, system prompt) — try the next one.
+                    if (code == 400 && message != null &&
+                        (message.contains("not enabled", true) || message.contains("not supported", true))
+                    ) return@withContext CallOutcome.ModelNotFound
+                    return@withContext CallOutcome.Failure(friendlyError(code, message))
+                }
+                CallOutcome.Success(JSONObject(text))
+            } catch (e: java.net.UnknownHostException) {
+                CallOutcome.Failure("No internet connection.")
+            } catch (e: java.net.SocketTimeoutException) {
+                CallOutcome.Failure("Gemini took too long to answer. Try again.")
+            } catch (e: Exception) {
+                CallOutcome.Failure("Couldn't reach Gemini: ${e.message}")
+            } finally {
+                connection?.disconnect()
             }
-
-            connection = (URL("$BASE/models/$model:generateContent").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 15_000
-                readTimeout = 30_000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                // Sent in a header, not the URL, so it never lands in logs or URLs.
-                setRequestProperty("x-goog-api-key", apiKey)
-            }
-            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-
-            val code = connection.responseCode
-            val text = (if (code in 200..299) connection.inputStream else connection.errorStream)
-                ?.bufferedReader()?.use { it.readText() }.orEmpty()
-
-            if (code == 404) return@withContext CallOutcome.ModelNotFound
-            if (code !in 200..299) return@withContext CallOutcome.Failure(friendlyError(code, apiMessage(text)))
-
-            val root = JSONObject(text)
-            val blockReason = root.optJSONObject("promptFeedback")?.optString("blockReason")
-            if (!blockReason.isNullOrBlank()) {
-                return@withContext CallOutcome.Failure("Gemini blocked this request ($blockReason).")
-            }
-            val parts = root.optJSONArray("candidates")?.optJSONObject(0)
-                ?.optJSONObject("content")?.optJSONArray("parts")
-            val out = buildString {
-                if (parts != null) for (i in 0 until parts.length()) append(parts.optJSONObject(i)?.optString("text").orEmpty())
-            }.trim()
-
-            if (out.isBlank()) CallOutcome.Failure("Gemini returned an empty answer. Try again.")
-            else CallOutcome.Success(out)
-        } catch (e: java.net.UnknownHostException) {
-            CallOutcome.Failure("No internet connection.")
-        } catch (e: java.net.SocketTimeoutException) {
-            CallOutcome.Failure("Gemini took too long to answer. Try again.")
-        } catch (e: Exception) {
-            CallOutcome.Failure("Couldn't reach Gemini: ${e.message}")
-        } finally {
-            connection?.disconnect()
         }
-    }
 
     private fun apiMessage(body: String): String? =
         runCatching { JSONObject(body).optJSONObject("error")?.optString("message") }.getOrNull()
