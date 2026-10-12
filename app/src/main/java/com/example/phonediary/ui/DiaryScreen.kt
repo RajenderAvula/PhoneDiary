@@ -69,7 +69,8 @@ import com.example.phonediary.ai.GeminiModelStore
 
 
 //private enum class DiaryTab { HOME, SETTINGS }
-private enum class DiaryTab { HOME, SETTINGS }
+//private enum class DiaryTab { HOME, SETTINGS }
+private enum class DiaryTab { HOME, ASK, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
 @OptIn(ExperimentalMaterial3Api::class)
