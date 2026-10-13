@@ -91,6 +91,54 @@ object GeminiClient {
         return parseTurn(root)
     }
 
+    class WebAnswer(val text: String, val sources: List<String>)
+
+    /** Answers one question using Google Search grounding. */
+    suspend fun searchWeb(context: Context, apiKey: String, query: String): Result<WebAnswer> {
+        val body = JSONObject().apply {
+            put(
+                "systemInstruction",
+                JSONObject().put(
+                    "parts",
+                    JSONArray().put(
+                        JSONObject().put(
+                            "text",
+                            "Answer using Google Search. Be factual and concise. " +
+                                "Include dates for anything time-sensitive."
+                        )
+                    )
+                )
+            )
+            put(
+                "contents",
+                JSONArray().put(
+                    JSONObject().put("role", "user")
+                        .put("parts", JSONArray().put(JSONObject().put("text", query)))
+                )
+            )
+            put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+            put("generationConfig", JSONObject().put("temperature", 0.2).put("maxOutputTokens", 2048))
+        }
+        val root = requestWithModelDiscovery(context, apiKey, body).getOrElse { return Result.failure(it) }
+        val candidate = root.optJSONArray("candidates")?.optJSONObject(0)
+        val parts = candidate?.optJSONObject("content")?.optJSONArray("parts")
+        val text = buildString {
+            if (parts != null) for (i in 0 until parts.length()) {
+                val p = parts.optJSONObject(i) ?: continue
+                if (p.has("text") && !p.optBoolean("thought", false)) append(p.optString("text"))
+            }
+        }.trim()
+        if (text.isBlank()) return Result.failure(Exception("The web search returned nothing."))
+
+        val chunks = candidate?.optJSONObject("groundingMetadata")?.optJSONArray("groundingChunks")
+        val sources = mutableListOf<String>()
+        if (chunks != null) for (i in 0 until chunks.length()) {
+            val title = chunks.optJSONObject(i)?.optJSONObject("web")?.optString("title").orEmpty()
+            if (title.isNotBlank() && title !in sources) sources += title
+        }
+        return Result.success(WebAnswer(text, sources.take(5)))
+    }
+
     private fun parseTurn(root: JSONObject): Result<ChatTurn> {
         val blockReason = root.optJSONObject("promptFeedback")?.optString("blockReason")
         if (!blockReason.isNullOrBlank()) {
