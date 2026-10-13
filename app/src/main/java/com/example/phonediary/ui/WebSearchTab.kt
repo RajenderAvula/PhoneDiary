@@ -55,6 +55,8 @@ class WebSearchState(private val context: Context) {
 
     fun obtain(): WebView {
         webView?.let { return it }
+       // return WebView(context).apply {
+       val state = this
         return WebView(context).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -69,21 +71,21 @@ class WebSearchState(private val context: Context) {
                     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, request.url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                     return true
                 }
-                override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { currentUrl = url }
+                override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { state.currentUrl = url }
                 override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
-                    currentUrl = url
-                    canBack = view.canGoBack()
-                    canForward = view.canGoForward()
+                    state.currentUrl = url
+                    state.canBack = view.canGoBack()
+                    state.canForward = view.canGoForward()
                 }
             }
             webChromeClient = object : WebChromeClient() {
-                override fun onProgressChanged(view: WebView, newProgress: Int) { progress = newProgress }
+                override fun onProgressChanged(view: WebView, newProgress: Int) { state.progress = newProgress }
             }
             setDownloadListener { url, _, _, _, _ ->
                 runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
             loadUrl(GOOGLE_HOME)
-            webView = this
+            state.webView = this
         }
     }
 
