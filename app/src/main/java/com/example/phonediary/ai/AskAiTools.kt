@@ -44,7 +44,8 @@ object AskAiTools {
         return JSONObject().put("name", name).put("description", description).put("parameters", params)
     }
 
-    fun declarations(): JSONArray {
+    //fun declarations(): JSONArray {
+    fun declarations(webSearch: Boolean = true): JSONArray {
         val dateTimeHelp = "Local time like 2026-10-12 21:40 (24-hour)."
         val functions = JSONArray()
 
@@ -100,6 +101,18 @@ object AskAiTools {
                     .put("title", prop("STRING", "The note's title (or the words it starts with)."))
             )
         )
+        if (webSearch) {
+            functions.put(
+                fn(
+                    "search_web",
+                    "Searches the web (Google Search) for current or external information: news, weather, prices, " +
+                        "sports, events, facts that may have changed. Never use it for the user's own notes or apps. " +
+                        "Never put the user's private note text in the query.",
+                    JSONObject().put("query", prop("STRING", "A short, self-contained web search question.")),
+                    listOf("query")
+                )
+            )
+        }
         return JSONArray().put(JSONObject().put("functionDeclarations", functions))
     }
 
@@ -109,6 +122,7 @@ object AskAiTools {
         "count_notes" -> "Counting your notes…"
         "search_notes" -> "Searching your notes…"
         "get_note" -> "Reading a note…"
+        "search_web" -> "Searching the web…"
         else -> "Looking that up…"
     }
 
@@ -123,6 +137,7 @@ object AskAiTools {
                     "count_notes" -> countNotes(context, args)
                     "search_notes" -> searchNotes(context, args)
                     "get_note" -> getNote(context, args)
+                    "search_web" -> searchWeb(context, args)
                     else -> error("Unknown tool: $name")
                 }
             } catch (e: Exception) {
@@ -224,6 +239,17 @@ object AskAiTools {
                 put("location_reminders", JSONArray(places.map { "${it.label} (${if (it.enabled) "on" else "off"})" }))
             }
         }
+    }
+    private suspend fun searchWeb(context: Context, args: JSONObject): JSONObject {
+        val query = args.optString("query").trim()
+        if (query.isEmpty()) return error("Give a search query")
+        val key = GeminiKeyStore.get(context) ?: return error("No Gemini API key")
+        return GeminiClient.searchWeb(context, key, query).fold(
+            onSuccess = { a ->
+                JSONObject().put("answer", a.text).put("sources", JSONArray(a.sources))
+            },
+            onFailure = { error("Web search failed: ${it.message}") }
+        )
     }
 
     // ------------------------------------------------------------------- tools
@@ -415,5 +441,15 @@ object AskAiTools {
             put("matches", out)
             if (matches.isEmpty()) put("message", "No note was found with that id or title.")
         }
+    }
+}
+/** Whether Ask AI may search the web (the 🌐 chip). */
+object AskWebPrefs {
+    private const val PREFS = "phone_diary_ai"
+    private const val KEY = "ask_web_search"
+    fun enabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, true)
+    fun set(context: Context, on: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY, on).apply()
     }
 }
