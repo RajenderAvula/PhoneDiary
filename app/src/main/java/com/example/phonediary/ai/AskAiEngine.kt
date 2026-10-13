@@ -8,6 +8,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
+
 object AskAiEngine {
 
     private const val MAX_STEPS = 6
@@ -26,8 +27,9 @@ object AskAiEngine {
 
        // val system = systemPrompt()
        // val tools = AskAiTools.declarations()
-       val system = systemPrompt(webOn)
+       
        val webOn = AskWebPrefs.enabled(context)
+       val system = systemPrompt(webOn)
         val tools = AskAiTools.declarations(webOn)
 
         repeat(MAX_STEPS) {
