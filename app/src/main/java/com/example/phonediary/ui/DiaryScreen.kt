@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.clipToBounds
 import com.example.phonediary.CrashLogger
 import com.example.phonediary.accessibility.BlockedAppsStore
 import com.example.phonediary.calendar.CalendarWriter
@@ -66,6 +67,7 @@ import com.example.phonediary.files.SubNoteManager
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.example.phonediary.ai.GeminiKeyStore
 import com.example.phonediary.ai.GeminiModelStore
+import com.example.phonediary.ai.GeminiClient
 
 
 //private enum class DiaryTab { HOME, SETTINGS }
@@ -81,6 +83,8 @@ fun DiaryScreen(
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(DiaryTab.HOME) }
+    val searchState = remember { WebSearchState(context) }
+    DisposableEffect(Unit) { onDispose { searchState.destroy() } }
 
     var newBlockedPackage by remember { mutableStateOf("") }
     var blockedApps by remember { mutableStateOf(setOf<String>()) }
@@ -126,12 +130,12 @@ fun DiaryScreen(
             // selected, wiping its remember state (including an in-progress note
             // or the full-screen editor) every time the user switches away and back.
             Box(
-                modifier = if (selectedTab == DiaryTab.HOME) Modifier.fillMaxSize() else Modifier.size(0.dp)
+                modifier = if (selectedTab == DiaryTab.HOME) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds()
             ) {
                 HomeTabContent()
             }
             Box(
-                modifier = if (selectedTab == DiaryTab.ASK) Modifier.fillMaxSize() else Modifier.size(0.dp)
+                modifier = if (selectedTab == DiaryTab.ASK) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds()
             ) {
                 AskAiTab(
                     isVisible = selectedTab == DiaryTab.ASK,
@@ -139,12 +143,12 @@ fun DiaryScreen(
                 )
             }
             Box(
-                modifier = if (selectedTab == DiaryTab.SEARCH) Modifier.fillMaxSize() else Modifier.size(0.dp)
-            ) {
-                WebSearchTab(isVisible = selectedTab == DiaryTab.SEARCH)
+                modifier = if (selectedTab == DiaryTab.SEARCH) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds())
+             {
+                WebSearchTab(state = searchState)
             }
             Box(
-                modifier = if (selectedTab == DiaryTab.SETTINGS) Modifier.fillMaxSize() else Modifier.size(0.dp)
+                modifier = if (selectedTab == DiaryTab.SETTINGS) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds()
             ) {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
                     SettingsPanel(
@@ -1567,6 +1571,10 @@ private fun SettingsPanel(
     var unusedFiles by remember { mutableStateOf<List<String>?>(null) }
     var cleanupStatus by remember { mutableStateOf<String?>(null) }
     var orphanSubNotes by remember { mutableStateOf<Int?>(null) }
+    var modelList by remember { mutableStateOf<List<String>>(emptyList()) }
+    var modelMenuOpen by remember { mutableStateOf(false) }
+    var modelStatus by remember { mutableStateOf<String?>(null) }
+    var manualModel by remember(geminiKeyTick) { mutableStateOf(GeminiModelStore.getManual(context)) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -1822,6 +1830,51 @@ private fun SettingsPanel(
                 "Check Google's terms before sending anything private.",
             style = MaterialTheme.typography.labelSmall
         )*/
+        Spacer(Modifier.height(8.dp))
+        Text("Gemini model", style = MaterialTheme.typography.labelMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                OutlinedButton(onClick = { modelMenuOpen = true }, enabled = modelList.isNotEmpty() || manualModel != null) {
+                    Text(manualModel ?: "Auto (recommended)")
+                }
+                DropdownMenu(expanded = modelMenuOpen, onDismissRequest = { modelMenuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Auto (recommended)") },
+                        onClick = {
+                            GeminiModelStore.setManual(context, null)
+                            manualModel = null; modelMenuOpen = false
+                        }
+                    )
+                    modelList.forEach { name ->
+                        DropdownMenuItem(
+                            text = { Text(name) },
+                            onClick = {
+                                GeminiModelStore.setManual(context, name)
+                                manualModel = name; modelMenuOpen = false
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(
+                enabled = GeminiKeyStore.hasKey(context),
+                onClick = {
+                    modelStatus = "Loading…"
+                    scope.launch {
+                        GeminiClient.listAvailableModels(GeminiKeyStore.get(context)!!)
+                            .onSuccess { modelList = it; modelStatus = "${it.size} model(s) available" }
+                            .onFailure { modelStatus = it.message }
+                    }
+                }
+            ) { Text("Load models") }
+        }
+        modelStatus?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+        Text(
+            if (manualModel != null) "Using only \"$manualModel\" — no automatic switching."
+            else "Auto picks a working Flash model and switches if one stalls.",
+            style = MaterialTheme.typography.labelSmall
+        )
         Text(
             "Used only when you tap Generate or ask a question in Ask AI. The notes and app usage needed to answer " +
                 "are sent to Google, so it needs internet. On Google's free tier, submitted content may be used to " +
