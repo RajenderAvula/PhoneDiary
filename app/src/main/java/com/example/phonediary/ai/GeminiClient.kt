@@ -8,7 +8,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Remembers which model worked, so discovery only runs once (and again if that model is retired). */
+/** Remembers which model worked, so discovery only runs once (and again if that model is retired or stalls). */
 object GeminiModelStore {
     private const val PREFS = "phone_diary_ai"
     private const val KEY = "gemini_model"
@@ -41,6 +41,7 @@ object GeminiClient {
     private sealed class CallOutcome {
         class Success(val root: JSONObject) : CallOutcome()
         object ModelNotFound : CallOutcome()
+        object TimedOut : CallOutcome()
         class Failure(val message: String) : CallOutcome()
     }
 
@@ -77,7 +78,14 @@ object GeminiClient {
             put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt))))
             put("contents", contents)
             if (tools != null && tools.length() > 0) put("tools", tools)
-            put("generationConfig", JSONObject().put("temperature", temperature).put("maxOutputTokens", maxOutputTokens))
+            put(
+                "generationConfig",
+                JSONObject()
+                    .put("temperature", temperature)
+                    .put("maxOutputTokens", maxOutputTokens)
+                    // A small thinking budget keeps answers fast. Models that reject it are skipped.
+                    .put("thinkingConfig", JSONObject().put("thinkingBudget", 512))
+            )
         }
         val root = requestWithModelDiscovery(context, apiKey, body).getOrElse { return Result.failure(it) }
         return parseTurn(root)
@@ -131,6 +139,7 @@ object GeminiClient {
         var queue: List<String> = listOfNotNull(cached)
         var discovered = false
         val tried = mutableSetOf<String>()
+        var timedOutOnce = false
 
         while (tried.size < MAX_MODELS_TO_TRY) {
             if (queue.isEmpty()) {
@@ -147,14 +156,26 @@ object GeminiClient {
             queue = queue.drop(1)
             if (!tried.add(model)) continue
 
-            when (val outcome = call(apiKey, model, body)) {
+            var outcome = call(apiKey, model, body)
+            // One quiet retry: a first slow answer is often just a cold start.
+            if (outcome is CallOutcome.TimedOut) outcome = call(apiKey, model, body)
+
+            when (outcome) {
                 is CallOutcome.Success -> {
                     GeminiModelStore.save(context, model)
                     return Result.success(outcome.root)
                 }
                 CallOutcome.ModelNotFound -> if (model == cached) GeminiModelStore.clear(context)
+                CallOutcome.TimedOut -> {
+                    // Stalled twice: forget this model and try the next candidate.
+                    if (model == cached) GeminiModelStore.clear(context)
+                    timedOutOnce = true
+                }
                 is CallOutcome.Failure -> return Result.failure(Exception(outcome.message))
             }
+        }
+        if (timedOutOnce) {
+            return Result.failure(Exception("Gemini is responding very slowly right now. Wait a minute and try again."))
         }
         return Result.failure(Exception("Couldn't find a Gemini model that works. Try again later."))
     }
@@ -223,8 +244,8 @@ object GeminiClient {
             try {
                 connection = (URL("$BASE/models/$model:generateContent").openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
-                    connectTimeout = 15_000
-                    readTimeout = 45_000
+                    connectTimeout = 20_000
+                    readTimeout = 90_000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     // Sent in a header, not the URL, so it never lands in logs or URLs.
@@ -239,9 +260,10 @@ object GeminiClient {
                 if (code == 404) return@withContext CallOutcome.ModelNotFound
                 if (code !in 200..299) {
                     val message = apiMessage(text)
-                    // This model can't do something we need (tools, system prompt) — try the next one.
+                    // This model can't do something we need (tools, thinking, system prompt) — try the next one.
                     if (code == 400 && message != null &&
-                        (message.contains("not enabled", true) || message.contains("not supported", true))
+                        (message.contains("not enabled", true) || message.contains("not supported", true) ||
+                            message.contains("thinking", true))
                     ) return@withContext CallOutcome.ModelNotFound
                     return@withContext CallOutcome.Failure(friendlyError(code, message))
                 }
@@ -249,7 +271,7 @@ object GeminiClient {
             } catch (e: java.net.UnknownHostException) {
                 CallOutcome.Failure("No internet connection.")
             } catch (e: java.net.SocketTimeoutException) {
-                CallOutcome.Failure("Gemini took too long to answer. Try again.")
+                CallOutcome.TimedOut
             } catch (e: Exception) {
                 CallOutcome.Failure("Couldn't reach Gemini: ${e.message}")
             } finally {
