@@ -31,6 +31,7 @@ import com.example.phonediary.files.StreamingSpeechHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
+import com.example.phonediary.ai.AskWebPrefs
 
 private class Suggestion(val label: String, val prompt: String, val sendNow: Boolean)
 
@@ -41,7 +42,8 @@ private val suggestions = listOf(
     Suggestion("App usage this week", "Give me statistics of my time spent on each app this week, with app names.", true),
     Suggestion("Summarize a note by title", "Give me a summary of my note titled ", false),
     Suggestion("What's special today?", "What's special about today's date?", true),
-    Suggestion("How do I make coffee?", "How do I make a good cup of coffee?", true)
+    Suggestion("How do I make coffee?", "How do I make a good cup of coffee?", true),
+    Suggestion("Today's top news", "What are the top news headlines today?", true)
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -61,6 +63,7 @@ fun AskAiTab(isVisible: Boolean, onOpenSettings: () -> Unit) {
     var showHistory by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
+    var webOn by remember { mutableStateOf(AskWebPrefs.enabled(context)) }
     var status by remember { mutableStateOf<String?>(null) }
 
     var confirmDeleteChat by remember { mutableStateOf<AskChat?>(null) }
@@ -226,6 +229,12 @@ fun AskAiTab(isVisible: Boolean, onOpenSettings: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("✨ Ask AI", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            FilterChip(
+                selected = webOn,
+                enabled = !isSending,
+                onClick = { webOn = !webOn; AskWebPrefs.set(context, webOn) },
+                label = { Text("🌐 Web") }
+            )
             TextButton(
                 enabled = !isSending,
                 onClick = { if (!showHistory) refreshChats(); showHistory = !showHistory }
@@ -318,8 +327,9 @@ fun AskAiTab(isVisible: Boolean, onOpenSettings: () -> Unit) {
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Your question and the notes or usage it needs are sent to Google Gemini to answer. " +
+                            Text(                     
+                                  "Your question and the notes or usage it needs are sent to Google Gemini to answer. " +
+                                    "With 🌐 Web on, Gemini may also search Google for current information. " +
                                     "Chats are saved only on this phone.",
                                 style = MaterialTheme.typography.labelSmall
                             )
