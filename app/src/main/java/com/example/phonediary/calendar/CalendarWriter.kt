@@ -26,7 +26,13 @@ object CalendarWriter {
     // while the visible TITLE can be the user's real note name.
     private const val ID_MARKER_PREFIX = "[[PhoneDiaryID:"
     private const val ID_MARKER_SUFFIX = "]]"
-    private const val DEFAULT_DURATION_MILLIS = 30L * 60 * 1000
+
+    /**
+     * How long each calendar event lasts. 0 = the event starts and ends at the
+     * note's own time, so it never extends past it (and never spills into the
+     * next day). Use 60_000L if your calendar app draws zero-length events badly.
+     */
+    private const val EVENT_DURATION_MILLIS = 0L
 
     fun hasCalendarPermission(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
@@ -183,14 +189,15 @@ object CalendarWriter {
     /**
      * Writes/updates a single timed calendar event for this entry.
      * TITLE is the note's own title/text (so it shows properly in any
-     * calendar app), anchored to timestampMillis (creation time).
+     * calendar app). The event starts at the note's time and lasts
+     * EVENT_DURATION_MILLIS (0 = it ends at the same moment it starts).
      */
     fun writeEntryEvent(context: Context, entry: LogEntry): Boolean {
         if (!hasCalendarPermission(context)) return false
         val calendarId = findWritableCalendarId(context) ?: return false
 
         val startMillis = entry.timestampMillis
-        val endMillis = startMillis + DEFAULT_DURATION_MILLIS
+        val endMillis = startMillis + EVENT_DURATION_MILLIS
 
         val displayTitle = entry.title?.takeIf { it.isNotBlank() }
             ?: entry.note?.takeIf { it.isNotBlank() }
@@ -239,6 +246,20 @@ object CalendarWriter {
 
     suspend fun refreshEntry(context: Context, entry: LogEntry): Boolean {
         return writeEntryEvent(context, entry)
+    }
+
+    /**
+     * Rewrites the calendar event of every entry. Run once after changing the
+     * event duration so existing 30-minute events are shortened. Returns how
+     * many events were written.
+     */
+    suspend fun refreshAll(context: Context): Int {
+        if (!hasCalendarPermission(context)) return 0
+        var written = 0
+        AppDatabase.getInstance(context).logEntryDao().getAllEntries().forEach { entry ->
+            if (writeEntryEvent(context, entry)) written++
+        }
+        return written
     }
 
     private fun cleanupOrphanedEventsForDate(context: Context, dateKey: String, currentEntryIds: Set<Long>) {
@@ -305,7 +326,7 @@ object CalendarWriter {
         val description = "Backup file: $zipFileName\nLocation: Downloads/PhoneDiary/backups\nEntries included: $entryCount\nCreated: $dateKey"
 
         val startMillis = System.currentTimeMillis()
-        val endMillis = startMillis + DEFAULT_DURATION_MILLIS
+        val endMillis = startMillis + EVENT_DURATION_MILLIS
 
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
