@@ -12,6 +12,12 @@ import java.net.URL
 object GeminiModelStore {
     private const val PREFS = "phone_diary_ai"
     private const val KEY = "gemini_model"
+    private const val MANUAL_KEY = "gemini_model_manual"
+    fun getManual(context: Context): String? = prefs(context).getString(MANUAL_KEY, null)?.takeIf { it.isNotBlank() }
+    fun setManual(context: Context, model: String?) {
+        if (model == null) prefs(context).edit().remove(MANUAL_KEY).apply()
+        else prefs(context).edit().putString(MANUAL_KEY, model).apply()
+    }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -49,6 +55,42 @@ object GeminiClient {
 
     /** One model reply: its raw content (to send back verbatim), plain text, and any tool calls. */
     class ChatTurn(val content: JSONObject, val text: String, val calls: List<FunctionCall>)
+    /** Every model this key can call generateContent on, newest-looking first. */
+    suspend fun listAvailableModels(apiKey: String): Result<List<String>> = withContext(Dispatchers.IO) {
+        try {
+            val names = mutableListOf<String>()
+            var pageToken: String? = null
+            var pages = 0
+            do {
+                val url = "$BASE/models?pageSize=200" + (pageToken?.let { "&pageToken=$it" } ?: "")
+                val c = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000; readTimeout = 20_000
+                    setRequestProperty("x-goog-api-key", apiKey)
+                }
+                try {
+                    val code = c.responseCode
+                    val text = (if (code in 200..299) c.inputStream else c.errorStream)
+                        ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    if (code !in 200..299) return@withContext Result.failure(Exception(friendlyError(code, apiMessage(text))))
+                    val root = JSONObject(text)
+                    val models = root.optJSONArray("models") ?: JSONArray()
+                    for (i in 0 until models.length()) {
+                        val m = models.optJSONObject(i) ?: continue
+                        val name = m.optString("name").removePrefix("models/")
+                        val methods = m.optJSONArray("supportedGenerationMethods") ?: continue
+                        if ((0 until methods.length()).any { methods.optString(it) == "generateContent" }) names += name
+                    }
+                    pageToken = root.optString("nextPageToken").takeIf { it.isNotBlank() }
+                } finally { c.disconnect() }
+                pages++
+            } while (pageToken != null && pages < 5)
+            Result.success(names.distinct().sortedDescending())
+        } catch (e: java.net.UnknownHostException) {
+            Result.failure(Exception("No internet connection."))
+        } catch (e: Exception) {
+            Result.failure(Exception("Couldn't load models: ${e.message}"))
+        }
+    }
 
     /** Single-prompt convenience used by the daily summary. */
     suspend fun generate(
@@ -183,6 +225,27 @@ object GeminiClient {
         apiKey: String,
         body: JSONObject
     ): Result<JSONObject> {
+        val manual = GeminiModelStore.getManual(context)
+        if (manual != null) {
+            var outcome = call(apiKey, manual, body)
+            if (outcome is CallOutcome.TimedOut) outcome = call(apiKey, manual, body)
+            if (outcome is CallOutcome.ModelNotFound) {
+                // Some models reject the thinking setting — retry once without it.
+                val plain = JSONObject(body.toString())
+                plain.optJSONObject("generationConfig")?.remove("thinkingConfig")
+                outcome = call(apiKey, manual, plain)
+            }
+            return when (outcome) {
+                is CallOutcome.Success -> Result.success(outcome.root)
+                CallOutcome.ModelNotFound -> Result.failure(
+                    Exception("The selected model \"$manual\" isn't available or can't do this. Pick another in Settings.")
+                )
+                CallOutcome.TimedOut -> Result.failure(
+                    Exception("\"$manual\" is responding very slowly. Try again or pick another model in Settings.")
+                )
+                is CallOutcome.Failure -> Result.failure(Exception(outcome.message))
+            }
+        }
         val cached = GeminiModelStore.get(context)
         var queue: List<String> = listOfNotNull(cached)
         var discovered = false
