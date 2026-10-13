@@ -191,7 +191,11 @@ fun FullScreenNoteEditor(
     // Sub-notes created in this editing session; removed again if this editor is cancelled.
     val sessionCreatedSubIds = remember { mutableSetOf<Long>() }
     var subEditor by remember { mutableStateOf<SubEditorTarget?>(null) }
-    var subNoteNotice by remember { mutableStateOf<String?>(null) }
+   // var subNoteNotice by remember { mutableStateOf<String?>(null) }
+   var subNoteNotice by remember { mutableStateOf<String?>(null) }
+    var subSelectMode by remember { mutableStateOf(false) }
+    var selectedSubIds by remember { mutableStateOf(setOf<Long>()) }
+    var confirmSubRemove by remember { mutableStateOf<Set<Long>?>(null) }
     var confirmSubDelete by remember { mutableStateOf<Set<Long>?>(null) }
     var subNoteRefresh by remember { mutableStateOf(0) }
     var subNoteTitles by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
@@ -291,6 +295,19 @@ fun FullScreenNoteEditor(
             val cursor = textFieldValue.selection.start.coerceIn(0, stripped.length)
             textFieldValue = TextFieldValue(stripped, selection = TextRange(cursor))
         }
+    }
+    /** Removes the links of several sub-notes at once. They are deleted when this note is saved. */
+    fun removeSubNoteLinks(ids: Set<Long>) {
+        val stripped = markerRegex.replace(textFieldValue.text) { m ->
+            val id = if (m.groupValues[1] == SubNoteManager.TYPE) SubNoteManager.parseId(m.groupValues[2]) else null
+            if (id != null && id in ids) "" else m.value
+        }
+        if (stripped != textFieldValue.text) {
+            val cursor = textFieldValue.selection.start.coerceIn(0, stripped.length)
+            textFieldValue = TextFieldValue(stripped, selection = TextRange(cursor))
+        }
+        selectedSubIds = emptySet()
+        subSelectMode = false
     }
 
     fun cancelAndCleanup() {
@@ -722,8 +739,33 @@ fun FullScreenNoteEditor(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
+                /*Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
                 OutlinedButton(onClick = { openSubNote(null) }) { Text("+ Sub-note") }
+            }*/
+                Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (subNoteIds.size > 1) {
+                        TextButton(onClick = {
+                            subSelectMode = !subSelectMode
+                            selectedSubIds = emptySet()
+                        }) { Text(if (subSelectMode) "Done" else "Select") }
+                    }
+                    OutlinedButton(onClick = { openSubNote(null) }) { Text("+ Sub-note") }
+                }
+            }
+            if (subSelectMode && subNoteIds.isNotEmpty()) {
+                val activeSelected = selectedSubIds.filter { it in subNoteIds }.toSet()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        selectedSubIds = if (activeSelected.size == subNoteIds.size) emptySet() else subNoteIds.toSet()
+                    }) { Text(if (activeSelected.size == subNoteIds.size) "None" else "All") }
+                    Text("${activeSelected.size} selected", style = MaterialTheme.typography.labelSmall)
+                    Spacer(Modifier.weight(1f))
+                    Button(
+                        enabled = activeSelected.isNotEmpty(),
+                        onClick = { confirmSubRemove = activeSelected }
+                    ) { Text("Delete selected") }
+                }
             }
             if (subNoteIds.isEmpty()) {
                 Text(
@@ -731,11 +773,27 @@ fun FullScreenNoteEditor(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            subNoteIds.forEach { id ->
+            /*subNoteIds.forEach { id ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(
                         modifier = Modifier.weight(1f),
                         onClick = { openSubNote(id) }
+                    ) {*/
+                    subNoteIds.forEach { id ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (subSelectMode) {
+                        Checkbox(
+                            checked = id in selectedSubIds,
+                            onCheckedChange = { checked ->
+                                selectedSubIds = if (checked) selectedSubIds + id else selectedSubIds - id
+                            }
+                        )
+                    }
+                    TextButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { if (subSelectMode) {
+                            selectedSubIds = if (id in selectedSubIds) selectedSubIds - id else selectedSubIds + id
+                        } else openSubNote(id) }
                     ) {
                         Text(
                             "🗒 ${subNoteTitles[id] ?: "…"}",
@@ -743,7 +801,10 @@ fun FullScreenNoteEditor(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
+                   // TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
+                   if (!subSelectMode) {
+                        TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
+                   }
                 }
             }
             subNoteNotice?.let {
@@ -971,6 +1032,17 @@ fun FullScreenNoteEditor(
                 performSave(ids)
             },
             onDismiss = { confirmSubDelete = null }
+        )
+    }
+    confirmSubRemove?.let { ids ->
+        ConfirmDeleteDialog(
+            message = "Remove ${ids.size} sub-note(s) from this note? They are permanently deleted, with their " +
+                "attachments and reminders, when you Save. Cancel the note to undo.",
+            onConfirm = {
+                confirmSubRemove = null
+                removeSubNoteLinks(ids)
+            },
+            onDismiss = { confirmSubRemove = null }
         )
     }
 
