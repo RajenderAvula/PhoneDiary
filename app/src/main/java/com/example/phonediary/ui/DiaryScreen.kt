@@ -975,9 +975,22 @@ OutlinedButton(onClick = {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
-                if (dayLogEntries.isNotEmpty()) {
+              /*  if (dayLogEntries.isNotEmpty()) {
                     TextButton(onClick = { selectionMode = !selectionMode; selectedEntryIds = emptySet() }) {
                         Text(if (selectionMode) "Cancel" else "Select")
+                    }
+                }*/
+                if (dayLogEntries.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (selectionMode) {
+                            val allSelected = selectedEntryIds.size == dayLogEntries.size
+                            TextButton(onClick = {
+                                selectedEntryIds = if (allSelected) emptySet() else dayLogEntries.map { it.id }.toSet()
+                            }) { Text(if (allSelected) "None" else "All") }
+                        }
+                        TextButton(onClick = { selectionMode = !selectionMode; selectedEntryIds = emptySet() }) {
+                            Text(if (selectionMode) "Cancel" else "Select")
+                        }
                     }
                 }
             }
@@ -1280,7 +1293,9 @@ OutlinedButton(onClick = {
 
     confirmDeleteSelectedForDate?.let { dateKey ->
         ConfirmDeleteDialog(
-            message = "Delete ${selectedEntryIds.size} selected entries? This cannot be undone.",
+           // message = "Delete ${selectedEntryIds.size} selected entries? This cannot be undone.",
+            message = "Delete ${selectedEntryIds.size} selected entries, including their sub-notes, " +
+                "attachments and reminders? This cannot be undone.",
             onConfirm = {
                 performDeleteSelectedEntries(dateKey)
                 confirmDeleteSelectedForDate = null
@@ -1695,6 +1710,12 @@ private fun SettingsPanel(
                 refreshTick++
             }
         }) { Text("Re-register all location reminders") }
+        OutlinedButton(onClick = {
+            scope.launch {
+                val n = CalendarWriter.refreshAll(context)
+                cleanupStatus = "Updated $n calendar event(s)"
+            }
+        }) { Text("Fix all calendar events") }
 
         Spacer(Modifier.height(12.dp))
         Divider()
