@@ -70,7 +70,7 @@ import com.example.phonediary.ai.GeminiModelStore
 
 //private enum class DiaryTab { HOME, SETTINGS }
 //private enum class DiaryTab { HOME, SETTINGS }
-private enum class DiaryTab { HOME, ASK, SETTINGS }
+private enum class DiaryTab { HOME, ASK, SEARCH, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -106,6 +106,12 @@ fun DiaryScreen(
                     label = { Text("Ask AI") }
                 )
                 NavigationBarItem(
+                    selected = selectedTab == DiaryTab.SEARCH,
+                    onClick = { selectedTab = DiaryTab.SEARCH },
+                    icon = { Text("🔍") },
+                    label = { Text("Search") }
+                )
+                NavigationBarItem(
                     selected = selectedTab == DiaryTab.SETTINGS,
                     onClick = { selectedTab = DiaryTab.SETTINGS },
                     icon = { Text("⚙") },
@@ -131,6 +137,11 @@ fun DiaryScreen(
                     isVisible = selectedTab == DiaryTab.ASK,
                     onOpenSettings = { selectedTab = DiaryTab.SETTINGS }
                 )
+            }
+            Box(
+                modifier = if (selectedTab == DiaryTab.SEARCH) Modifier.fillMaxSize() else Modifier.size(0.dp)
+            ) {
+                WebSearchTab(isVisible = selectedTab == DiaryTab.SEARCH)
             }
             Box(
                 modifier = if (selectedTab == DiaryTab.SETTINGS) Modifier.fillMaxSize() else Modifier.size(0.dp)
