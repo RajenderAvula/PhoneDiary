@@ -1,10 +1,13 @@
 package com.example.phonediary.ui
 
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -25,7 +28,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 
 private const val GOOGLE_HOME = "https://www.google.com"
 
-/** Turns what the user typed into a page address: a site if it looks like one, otherwise a Google search. */
 private fun toUrl(raw: String): String {
     val text = raw.trim()
     if (text.isEmpty()) return GOOGLE_HOME
@@ -38,53 +40,99 @@ private fun toUrl(raw: String): String {
     }
 }
 
+/**
+ * Owns the WebView so it outlives the tab's composition. The tab is only
+ * composed while selected (a native view can't be hidden by shrinking it),
+ * and this keeps the page, history and scroll position between visits.
+ */
+class WebSearchState(private val context: Context) {
+    var currentUrl by mutableStateOf(GOOGLE_HOME)
+    var progress by mutableStateOf(0)
+    var canBack by mutableStateOf(false)
+    var canForward by mutableStateOf(false)
+    var webView: WebView? = null
+        private set
+
+    fun obtain(): WebView {
+        webView?.let { return it }
+        return WebView(context).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.allowFileAccess = false
+            settings.allowContentAccess = false
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    val scheme = request.url.scheme.orEmpty()
+                    if (scheme == "http" || scheme == "https") return false
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, request.url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    return true
+                }
+                override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { currentUrl = url }
+                override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+                    currentUrl = url
+                    canBack = view.canGoBack()
+                    canForward = view.canGoForward()
+                }
+            }
+            webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView, newProgress: Int) { progress = newProgress }
+            }
+            setDownloadListener { url, _, _, _, _ ->
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+            loadUrl(GOOGLE_HOME)
+            webView = this
+        }
+    }
+
+    fun destroy() {
+        webView?.apply { (parent as? ViewGroup)?.removeView(this); stopLoading(); destroy() }
+        webView = null
+    }
+
+    fun clearAll() {
+        webView?.apply { clearCache(true); clearHistory() }
+        CookieManager.getInstance().removeAllCookies(null)
+        WebStorage.getInstance().deleteAllData()
+        webView?.loadUrl(GOOGLE_HOME)
+    }
+}
+
 @Composable
-fun WebSearchTab(isVisible: Boolean) {
+fun WebSearchTab(state: WebSearchState) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
 
-    var started by remember { mutableStateOf(false) }
-    var webView by remember { mutableStateOf<WebView?>(null) }
     var input by remember { mutableStateOf("") }
     var editing by remember { mutableStateOf(false) }
-    var currentUrl by remember { mutableStateOf(GOOGLE_HOME) }
-    var progress by remember { mutableStateOf(0) }
-    var canBack by remember { mutableStateOf(false) }
-    var canForward by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
 
-    // Load nothing until the tab is first opened.
-    LaunchedEffect(isVisible) {
-        if (isVisible) started = true
-        if (isVisible) webView?.onResume() else webView?.onPause()
-    }
-
-    BackHandler(enabled = isVisible && canBack) { webView?.goBack() }
+    BackHandler(enabled = state.canBack) { state.webView?.goBack() }
 
     fun go(raw: String) {
-        webView?.loadUrl(toUrl(raw))
+        state.webView?.loadUrl(toUrl(raw))
         focusManager.clearFocus()
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
         OutlinedTextField(
-            value = if (editing) input else currentUrl,
+            value = if (editing) input else state.currentUrl,
             onValueChange = { input = it },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp)
-                .onFocusChanged { state ->
-                    if (state.isFocused && !editing) { editing = true; input = "" }
-                    if (!state.isFocused) editing = false
+                .onFocusChanged { s ->
+                    if (s.isFocused && !editing) { editing = true; input = "" }
+                    if (!s.isFocused) editing = false
                 },
             singleLine = true,
             placeholder = { Text("Search Google or type a website") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { go(input) }),
             trailingIcon = {
-                if (editing && input.isNotEmpty()) {
-                    TextButton(onClick = { input = "" }) { Text("✕") }
-                }
+                if (editing && input.isNotEmpty()) TextButton(onClick = { input = "" }) { Text("✕") }
             }
         )
 
@@ -92,94 +140,40 @@ fun WebSearchTab(isVisible: Boolean) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(enabled = canBack, onClick = { webView?.goBack() }) { Text("◀") }
-            IconButton(enabled = canForward, onClick = { webView?.goForward() }) { Text("▶") }
-            IconButton(onClick = { webView?.reload() }) { Text("⟳") }
-            IconButton(onClick = { webView?.loadUrl(GOOGLE_HOME) }) { Text("🏠") }
+            IconButton(enabled = state.canBack, onClick = { state.webView?.goBack() }) { Text("◀") }
+            IconButton(enabled = state.canForward, onClick = { state.webView?.goForward() }) { Text("▶") }
+            IconButton(onClick = { state.webView?.reload() }) { Text("⟳") }
+            IconButton(onClick = { state.webView?.loadUrl(GOOGLE_HOME) }) { Text("🏠") }
             Spacer(Modifier.weight(1f))
             TextButton(onClick = {
-                runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl)))
-                }
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(state.currentUrl))) }
             }) { Text("Open in browser") }
             TextButton(onClick = { confirmClear = true }) { Text("Clear") }
         }
 
-        if (progress in 1..99) {
-            LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
+        if (state.progress in 1..99) {
+            LinearProgressIndicator(progress = { state.progress / 100f }, modifier = Modifier.fillMaxWidth())
         }
 
-        if (started) {
-            AndroidView(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        settings.javaScriptEnabled = true      // Google's pages need it
-                        settings.domStorageEnabled = true
-                        settings.allowFileAccess = false       // never let a page read local files
-                        settings.allowContentAccess = false
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
-
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(
-                                view: WebView,
-                                request: android.webkit.WebResourceRequest
-                            ): Boolean {
-                                val scheme = request.url.scheme.orEmpty()
-                                if (scheme == "http" || scheme == "https") return false
-                                // mailto:, tel:, app links… go to the phone, never run inside the page.
-                                runCatching {
-                                    ctx.startActivity(Intent(Intent.ACTION_VIEW, request.url))
-                                }
-                                return true
-                            }
-
-                            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-                                currentUrl = url
-                            }
-
-                            override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
-                                currentUrl = url
-                                canBack = view.canGoBack()
-                                canForward = view.canGoForward()
-                            }
-                        }
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onProgressChanged(view: WebView, newProgress: Int) {
-                                progress = newProgress
-                            }
-                        }
-                        setDownloadListener { url, _, _, _, _ ->
-                            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-                        }
-                        webView = this
-                        loadUrl(GOOGLE_HOME)
-                    }
+        AndroidView(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            factory = {
+                state.obtain().also { wv ->
+                    (wv.parent as? ViewGroup)?.removeView(wv)
+                    wv.onResume()
                 }
-            )
-        } else {
-            Spacer(Modifier.weight(1f))
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            webView?.apply { stopLoading(); destroy() }
-            webView = null
-        }
+            },
+            onRelease = { wv ->
+                wv.onPause()
+                (wv.parent as? ViewGroup)?.removeView(wv)
+            }
+        )
     }
 
     if (confirmClear) {
         ConfirmDeleteDialog(
             message = "Clear this tab's cookies, cache and history? You will be signed out of sites you logged in to here.",
-            onConfirm = {
-                confirmClear = false
-                webView?.clearCache(true)
-                webView?.clearHistory()
-                CookieManager.getInstance().removeAllCookies(null)
-                WebStorage.getInstance().deleteAllData()
-                webView?.loadUrl(GOOGLE_HOME)
-            },
+            onConfirm = { confirmClear = false; state.clearAll() },
             onDismiss = { confirmClear = false }
         )
     }
