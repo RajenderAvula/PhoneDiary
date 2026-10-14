@@ -876,6 +876,8 @@ private fun HomeTabContent() {
 
         Spacer(Modifier.height(8.dp))
         LocationReminderSection(
+           // items = mainLocationReminders,
+            parentPath = listOf("📝 " + noteTitle.trim().ifBlank { "New note" }),
             items = mainLocationReminders,
             onItemsChanged = { mainLocationReminders = it },
             registrationStatus = mainGeofenceStatus,
@@ -1108,6 +1110,8 @@ OutlinedButton(onClick = {
                             }
                             Spacer(Modifier.height(6.dp))
                             LocationReminderSection(
+                               // items = editingLocationReminders,
+                                parentPath = listOf("📝 " + editingTitle.trim().ifBlank { "Untitled note" }),
                                 items = editingLocationReminders,
                                 onItemsChanged = { editingLocationReminders = it },
                                 registrationStatus = editingGeofenceStatus,
