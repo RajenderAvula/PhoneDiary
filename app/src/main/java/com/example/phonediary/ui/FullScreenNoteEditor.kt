@@ -92,7 +92,11 @@ fun FullScreenNoteEditor(
     isLocationNote: Boolean = false,
     locationNoteName: String = "",
     /** True when this editor is editing a sub-note (only changes the title bar). */
+  //  isSubNote: Boolean = false,
+  //  highlightQuery: String? = null,
     isSubNote: Boolean = false,
+    /** The levels above this note, outermost first. Empty for a main note. */
+    parentPath: List<String> = emptyList(),
     highlightQuery: String? = null,
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
@@ -171,7 +175,17 @@ fun FullScreenNoteEditor(
 
     var showScribblePad by remember { mutableStateOf(false) }
     var isScanningText by remember { mutableStateOf(false) }
-    var isViewMode by remember { mutableStateOf(false) }
+   // var isViewMode by remember { mutableStateOf(false) }
+   var isViewMode by remember { mutableStateOf(false) }
+
+    // This note's own line in the path bar. It reads `title`, so it updates as you type.
+    val levelLabel = when {
+        isLocationNote -> "📍 " + locationNoteName.ifBlank { "Location" } +
+            (if (title.isNotBlank()) " — ${title.trim()}" else "")
+        isSubNote -> "🗒 " + title.trim().ifBlank { "Untitled sub-note" }
+        else -> "📝 " + title.trim().ifBlank { if (existingEntryId == null) "New note" else "Untitled note" }
+    }
+    val notePath = parentPath + levelLabel
 
     // ---- Note box scrolling + timestamp stamps ----
     var wrapLines by remember { mutableStateOf(NoteBoxPrefs.wrapLines(context)) }
@@ -595,12 +609,22 @@ fun FullScreenNoteEditor(
                 }
             )
         }
-    ) { padding ->
+  /*  ) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
                 .padding(16.dp)
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+        ) {*/
+        ) { padding ->
+      Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+        NoteHierarchyBar(notePath)
+        Column(
+            modifier = Modifier
+                .padding(16.dp)
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
             OutlinedTextField(
@@ -916,6 +940,8 @@ fun FullScreenNoteEditor(
                 LocationReminderSection(
                     items = locationReminders,
                     onItemsChanged = { locationReminders = it },
+                  //  registrationStatus = geofenceStatus,
+                    parentPath = notePath,
                     registrationStatus = geofenceStatus,
                     registrationError = geofenceErrors,
                     onToggle = { item ->
@@ -984,6 +1010,7 @@ fun FullScreenNoteEditor(
             }
         }
     }
+}
 
     if (showScribblePad) {
         InlineScribblePad(
@@ -1071,7 +1098,9 @@ fun FullScreenNoteEditor(
                     initialNoteDateTimeMillis = e?.timestampMillis ?: noteDateTimeMillis,
                     initialLocationReminders = LocationReminderListUtil.fromStored(e?.locationReminders),
                     existingEntryId = e?.id,
+                   // isSubNote = true,
                     isSubNote = true,
+                    parentPath = notePath,
                     onSave = { r ->
                         val wasNew = e == null
                         scope.launch {
