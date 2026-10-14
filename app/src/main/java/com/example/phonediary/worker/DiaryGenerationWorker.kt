@@ -2,11 +2,11 @@ package com.example.phonediary.worker
 
 import android.content.Context
 import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.usage.UsageStatsCollector
-import java.text.SimpleDateFormat
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class DiaryGenerationWorker(
@@ -16,15 +16,13 @@ class DiaryGenerationWorker(
 
     override suspend fun doWork(): Result {
         return try {
+            // Updates one usage row per app per day. No Calendar rewrite here:
+            // only notes go to the Calendar, and they are written when saved.
             UsageStatsCollector(applicationContext).collectForToday()
-
-            val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                .format(System.currentTimeMillis())
-
-            val wrote = CalendarWriter.refreshDate(applicationContext, dateKey)
-            if (wrote) Result.success() else Result.retry()
+            Result.success()
         } catch (e: Exception) {
-            Result.retry()
+            // Retrying can't fix a failed query; try again at the next scheduled run.
+            Result.success()
         }
     }
 
@@ -32,13 +30,13 @@ class DiaryGenerationWorker(
         const val WORK_NAME = "nightly_diary_generation"
 
         fun schedule(context: Context) {
-            val request = androidx.work.PeriodicWorkRequestBuilder<DiaryGenerationWorker>(
+            val request = PeriodicWorkRequestBuilder<DiaryGenerationWorker>(
                 15, TimeUnit.MINUTES
             ).build()
 
-            androidx.work.WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                androidx.work.ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.KEEP,
                 request
             )
         }
