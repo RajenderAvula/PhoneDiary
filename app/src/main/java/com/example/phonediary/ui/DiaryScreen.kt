@@ -68,6 +68,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.example.phonediary.ai.GeminiKeyStore
 import com.example.phonediary.ai.GeminiModelStore
 import com.example.phonediary.ai.GeminiClient
+import com.example.phonediary.files.UsageCleanup
 
 
 //private enum class DiaryTab { HOME, SETTINGS }
@@ -1735,6 +1736,13 @@ private fun SettingsPanel(
                 cleanupStatus = "Updated $n calendar event(s)"
             }
         }) { Text("Fix all calendar events") }
+        OutlinedButton(onClick = {
+            scope.launch {
+                val removed = UsageCleanup.run(context)
+                val events = CalendarWriter.refreshAll(context)
+                cleanupStatus = "Removed $removed duplicate usage row(s); tidied $events calendar event(s)"
+            }
+        }) { Text("Clean up usage clutter") }
 
         Spacer(Modifier.height(12.dp))
         Divider()
