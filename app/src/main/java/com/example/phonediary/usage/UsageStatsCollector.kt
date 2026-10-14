@@ -5,7 +5,6 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Process
-import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.LogEntry
 import java.text.SimpleDateFormat
@@ -25,6 +24,11 @@ class UsageStatsCollector(private val context: Context) {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
+    /**
+     * Keeps exactly one "app_usage" row per app per day: it is updated when
+     * the total grows and inserted only the first time the app appears.
+     * Usage rows are not written to the Calendar.
+     */
     suspend fun collectForToday() {
         if (!hasUsagePermission()) return
 
@@ -44,28 +48,45 @@ class UsageStatsCollector(private val context: Context) {
         val dateKey = dateFormat.format(startOfDay)
         val dao = AppDatabase.getInstance(context).logEntryDao()
 
-        for (stats in statsList) {
-            if (stats.totalTimeInForeground <= 0L) continue
+        // Today's existing usage rows, indexed by app name, loaded once.
+        val existing = dao.getEntriesForDate(dateKey)
+            .filter { it.source == "app_usage" }
+            .groupBy { it.appName }
+
+        // Android returns several buckets per package; add them up.
+        val perPackage = statsList
+            .filter { it.totalTimeInForeground > 0L }
+            .groupBy { it.packageName }
+
+        for ((packageName, buckets) in perPackage) {
+            val total = buckets.sumOf { it.totalTimeInForeground }
+            val lastUsed = buckets.maxOf { it.lastTimeUsed }
+            if (total < 60_000L) continue // under a minute isn't worth a row
 
             val appLabel = try {
-                val appInfo = pm.getApplicationInfo(stats.packageName, PackageManager.GET_META_DATA)
+                val appInfo = pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA)
                 pm.getApplicationLabel(appInfo).toString()
             } catch (e: PackageManager.NameNotFoundException) {
-                stats.packageName
+                packageName
             }
 
-            dao.insert(
-                LogEntry(
-                    timestampMillis = stats.lastTimeUsed,
-                    dateKey = dateKey,
-                    source = "app_usage",
-                    appName = appLabel,
-                    durationMillis = stats.totalTimeInForeground
+            val rows = existing[appLabel].orEmpty()
+            val current = rows.maxByOrNull { it.durationMillis ?: 0L }
+            if (current == null) {
+                dao.insert(
+                    LogEntry(
+                        timestampMillis = lastUsed,
+                        dateKey = dateKey,
+                        source = "app_usage",
+                        appName = appLabel,
+                        durationMillis = total
+                    )
                 )
-            )
+            } else if ((current.durationMillis ?: 0L) != total) {
+                dao.update(current.copy(timestampMillis = lastUsed, durationMillis = total))
+            }
+            // Extra duplicates from older versions are removed by "Clean up usage clutter" in Settings.
         }
-
-        CalendarWriter.refreshDate(context, dateKey)
     }
 
     private fun startOfTodayMillis(): Long {
