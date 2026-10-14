@@ -25,6 +25,8 @@ object AskAiTools {
     private const val SNIPPET_CHARS = 300
     private const val FULL_NOTE_CHARS = 6000
     private const val MAX_EVENTS = 150
+    private val webCache = ConcurrentHashMap<String, Pair<Long, JSONObject>>()
+    @Volatile private var webBlockedUntil = 0L
 
     private val labelCache = ConcurrentHashMap<String, String>()
 
@@ -240,7 +242,7 @@ object AskAiTools {
             }
         }
     }
-    private suspend fun searchWeb(context: Context, args: JSONObject): JSONObject {
+   /* private suspend fun searchWeb(context: Context, args: JSONObject): JSONObject {
         val query = args.optString("query").trim()
         if (query.isEmpty()) return error("Give a search query")
         val key = GeminiKeyStore.get(context) ?: return error("No Gemini API key")
@@ -249,6 +251,35 @@ object AskAiTools {
                 JSONObject().put("answer", a.text).put("sources", JSONArray(a.sources))
             },
             onFailure = { error("Web search failed: ${it.message}") }
+        )
+    }*/
+    private suspend fun searchWeb(context: Context, args: JSONObject): JSONObject {
+        val query = args.optString("query").trim()
+        if (query.isEmpty()) return error("Give a search query")
+        val now = System.currentTimeMillis()
+
+        webCache[query.lowercase()]?.let { (time, cached) ->
+            if (now - time < 10 * 60 * 1000L) return cached
+        }
+        if (now < webBlockedUntil) {
+            return error(
+                "Web search is rate-limited right now. Tell the user to wait about a minute, " +
+                    "or answer from your own knowledge and say it may be out of date."
+            )
+        }
+
+        val key = GeminiKeyStore.get(context) ?: return error("No Gemini API key")
+        return GeminiClient.searchWeb(context, key, query).fold(
+            onSuccess = { a ->
+                JSONObject().put("answer", a.text).put("sources", JSONArray(a.sources))
+                    .also { webCache[query.lowercase()] = now to it }
+            },
+            onFailure = {
+                if (it.message?.contains("rate limit", ignoreCase = true) == true) {
+                    webBlockedUntil = now + 60_000L
+                }
+                error("Web search failed: ${it.message}")
+            }
         )
     }
 
