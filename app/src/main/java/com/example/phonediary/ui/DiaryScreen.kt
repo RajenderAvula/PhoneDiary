@@ -25,12 +25,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.phonediary.CrashLogger
 import com.example.phonediary.accessibility.BlockedAppsStore
+import com.example.phonediary.ai.GeminiClient
+import com.example.phonediary.ai.GeminiKeyStore
+import com.example.phonediary.ai.GeminiModelStore
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
 import com.example.phonediary.data.AttachmentListUtil
@@ -38,6 +47,7 @@ import com.example.phonediary.data.AttachmentListUtil as TagListUtil
 import com.example.phonediary.data.LocationReminderItem
 import com.example.phonediary.data.LocationReminderListUtil
 import com.example.phonediary.data.LogEntry
+import com.example.phonediary.files.AttachmentCleanup
 import com.example.phonediary.files.AudioRecorderHelper
 import com.example.phonediary.files.BackupHelper
 import com.example.phonediary.files.EmailBackupHelper
@@ -48,6 +58,8 @@ import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
+import com.example.phonediary.files.SubNoteManager
+import com.example.phonediary.files.UsageCleanup
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.GeofenceHelper
 import com.example.phonediary.reminders.GeofenceStatusStore
@@ -59,22 +71,7 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import com.example.phonediary.files.AttachmentCleanup
-import com.example.phonediary.files.SubNoteManager
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import com.example.phonediary.ai.GeminiKeyStore
-import com.example.phonediary.ai.GeminiModelStore
-import com.example.phonediary.ai.GeminiClient
-import com.example.phonediary.files.UsageCleanup
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 
-
-//private enum class DiaryTab { HOME, SETTINGS }
-//private enum class DiaryTab { HOME, SETTINGS }
 private enum class DiaryTab { HOME, ASK, SEARCH, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
 
@@ -86,6 +83,9 @@ fun DiaryScreen(
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(DiaryTab.HOME) }
+
+    // The Google page is a native view, so the Search tab is composed only while selected;
+    // this holder keeps its page and history between visits.
     val searchState = remember { WebSearchState(context) }
     DisposableEffect(Unit) { onDispose { searchState.destroy() } }
 
@@ -128,10 +128,7 @@ fun DiaryScreen(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            // Both tabs stay composed at all times — only visibility/size toggles.
-            // A conditional `when` here would fully dispose whichever tab isn't
-            // selected, wiping its remember state (including an in-progress note
-            // or the full-screen editor) every time the user switches away and back.
+            // Compose tabs stay composed (hidden ones are clipped to 0 size) so their state survives.
             Box(
                 modifier = if (selectedTab == DiaryTab.HOME) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds()
             ) {
@@ -145,10 +142,10 @@ fun DiaryScreen(
                     onOpenSettings = { selectedTab = DiaryTab.SETTINGS }
                 )
             }
-            Box(
-                modifier = if (selectedTab == DiaryTab.SEARCH) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds())
-             {
-                WebSearchTab(state = searchState)
+            if (selectedTab == DiaryTab.SEARCH) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    WebSearchTab(state = searchState)
+                }
             }
             Box(
                 modifier = if (selectedTab == DiaryTab.SETTINGS) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds()
@@ -252,6 +249,8 @@ private fun HomeTabContent() {
 
     var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
     var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
+
+    // ---- Tree / hierarchical view in the day list ----
     var treeShownIds by remember { mutableStateOf(setOf<Long>()) }
     var collapsedNodeKeys by remember { mutableStateOf(setOf<String>()) }
     var treeRefresh by remember { mutableStateOf(0) }
@@ -263,7 +262,7 @@ private fun HomeTabContent() {
         contract = ActivityResultContracts.GetContent()
     ) { uri -> if (uri != null) scanImageUri = uri }
 
-    // ---- Speech: one-shot (toggleable) and streaming (live partial) ----
+    // ---- Speech: 🎤 online one-shot (toggleable) and 🎙️ offline-first (live partial) ----
     val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
     var isOneShotListening by remember { mutableStateOf(false) }
     var oneShotError by remember { mutableStateOf<String?>(null) }
@@ -372,8 +371,7 @@ private fun HomeTabContent() {
         if (distinctUris.isNotEmpty()) {
             scope.launch {
                 val saved = distinctUris.mapNotNull { uri -> FileAttachmentHelper.copyToDownloads(context, uri) }
-               // pendingAttachments = pendingAttachments + saved
-               pendingAttachments = (pendingAttachments + saved).distinctBy { it.name }
+                pendingAttachments = (pendingAttachments + saved).distinctBy { it.name }
             }
         }
     }
@@ -385,7 +383,6 @@ private fun HomeTabContent() {
             val uri = pendingVideoUri
             val name = pendingVideoName
             if (uri != null && name != null) {
-                //pendingAttachments = pendingAttachments + SavedAttachment(name, uri)
                 pendingAttachments = (pendingAttachments + SavedAttachment(name, uri)).distinctBy { it.name }
             }
         }
@@ -398,7 +395,6 @@ private fun HomeTabContent() {
             val saved = audioRecorder.stopRecordingAndSave()
             isRecordingAudio = false
             if (saved != null) pendingAttachments = (pendingAttachments + saved).distinctBy { it.name }
-            //pendingAttachments = pendingAttachments + saved
         } else {
             try {
                 audioRecorder.startRecording()
@@ -437,7 +433,7 @@ private fun HomeTabContent() {
         searchResults = null
         searchQuery = ""
         scope.launch {
-            //dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
+            // Sub-notes live inside their parent note, so they aren't listed as separate entries.
             dayLogEntries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
                 .filter { it.source != SubNoteManager.SOURCE }
         }
@@ -510,35 +506,6 @@ private fun HomeTabContent() {
         context.startActivity(Intent(Intent.ACTION_VIEW).setData(builder.build()))
     }
 
-   /* fun performDeleteSelectedEntries(dateKey: String) {
-        scope.launch {
-            val dao = AppDatabase.getInstance(context).logEntryDao()
-            dayLogEntries.filter { it.id in selectedEntryIds }.forEach {
-                NoteReminderScheduler.cancelReminder(context, it.id)
-                NoteReminderScheduler.cancelDue(context, it.id)
-                NoteReminderScheduler.cancelRepeat(context, it.id)
-                GeofenceHelper.removeAllGeofencesForEntry(context, it.id, LocationReminderListUtil.fromStored(it.locationReminders))
-                CalendarWriter.deleteEntryEvent(context, it.id)
-                dao.delete(it)
-            }
-            selectedEntryIds = emptySet()
-            selectionMode = false
-            openDate(dateKey)
-        }
-    }
-
-    fun performDeleteEntry(entry: LogEntry, dateKey: String) {
-        scope.launch {
-            NoteReminderScheduler.cancelReminder(context, entry.id)
-            NoteReminderScheduler.cancelDue(context, entry.id)
-            NoteReminderScheduler.cancelRepeat(context, entry.id)
-            GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, LocationReminderListUtil.fromStored(entry.locationReminders))
-            CalendarWriter.deleteEntryEvent(context, entry.id)
-            AppDatabase.getInstance(context).logEntryDao().delete(entry)
-            openDate(dateKey)
-            loadAllTags()
-        }
-    }*/
     fun performDeleteSelectedEntries(dateKey: String) {
         scope.launch {
             val dao = AppDatabase.getInstance(context).logEntryDao()
@@ -550,8 +517,7 @@ private fun HomeTabContent() {
                 GeofenceHelper.removeAllGeofencesForEntry(context, it.id, LocationReminderListUtil.fromStored(it.locationReminders))
                 CalendarWriter.deleteEntryEvent(context, it.id)
                 removedNames += AttachmentCleanup.namesOf(it)
-               // SubNoteManager.deleteAllIn(context, it.note)
-               SubNoteManager.deleteAllInEntry(context, it)
+                SubNoteManager.deleteAllInEntry(context, it)
                 dao.delete(it)
             }
             AttachmentCleanup.deleteIfUnreferenced(context, removedNames)
@@ -568,8 +534,7 @@ private fun HomeTabContent() {
             NoteReminderScheduler.cancelRepeat(context, entry.id)
             GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, LocationReminderListUtil.fromStored(entry.locationReminders))
             CalendarWriter.deleteEntryEvent(context, entry.id)
-          //  SubNoteManager.deleteAllIn(context, entry.note)
-          SubNoteManager.deleteAllInEntry(context, entry)
+            SubNoteManager.deleteAllInEntry(context, entry)
             AppDatabase.getInstance(context).logEntryDao().delete(entry)
             AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry))
             openDate(dateKey)
@@ -882,8 +847,6 @@ private fun HomeTabContent() {
 
         Spacer(Modifier.height(8.dp))
         LocationReminderSection(
-           // items = mainLocationReminders,
-            parentPath = listOf("📝 " + noteTitle.trim().ifBlank { "New note" }),
             items = mainLocationReminders,
             onItemsChanged = { mainLocationReminders = it },
             registrationStatus = mainGeofenceStatus,
@@ -915,10 +878,9 @@ private fun HomeTabContent() {
                 AttachmentPreview(
                     name = attachment.name,
                     uri = attachment.uri,
-                // onRemove = { pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name } }
                     onRemove = {
-    pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name }
-    AttachmentCleanup.launchDeleteIfUnreferenced(context, listOf(attachment.name))
+                        pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name }
+                        AttachmentCleanup.launchDeleteIfUnreferenced(context, listOf(attachment.name))
                     }
                 )
             }
@@ -958,8 +920,6 @@ private fun HomeTabContent() {
                                 NoteReminderScheduler.scheduleRepeat(context, newId, it)
                             }
                         }
-                        // Status is persisted by GeofenceHelper itself, so the form
-                        // being reset below doesn't lose it.
                         GeofenceHelper.syncGeofencesForEntry(context, newId, mainLocationReminders)
 
                         AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
@@ -974,17 +934,12 @@ private fun HomeTabContent() {
                 }
             }) { Text("Save entry") }
             Spacer(Modifier.width(8.dp))
-            //OutlinedButton(onClick = { resetMainEntryFields() }) { Text("Cancel") }
-           /* OutlinedButton(onClick = {
-    AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
-    resetMainEntryFields()
-}) { Text("Cancel") }*/
-OutlinedButton(onClick = {
-    AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
-    // Sub-notes created inside this draft's location notes are saved already — remove them.
-    SubNoteManager.launchDeleteWithCascade(context, SubNoteManager.idsInItems(mainLocationReminders))
-    resetMainEntryFields()
-}) { Text("Cancel") }
+            OutlinedButton(onClick = {
+                AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
+                // Sub-notes created inside this draft's location notes are saved already — remove them.
+                SubNoteManager.launchDeleteWithCascade(context, SubNoteManager.idsInItems(mainLocationReminders))
+                resetMainEntryFields()
+            }) { Text("Cancel") }
         }
 
         // ---- 4. Day details ----
@@ -999,11 +954,6 @@ OutlinedButton(onClick = {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Logged entries — $date", style = MaterialTheme.typography.titleMedium)
-              /*  if (dayLogEntries.isNotEmpty()) {
-                    TextButton(onClick = { selectionMode = !selectionMode; selectedEntryIds = emptySet() }) {
-                        Text(if (selectionMode) "Cancel" else "Select")
-                    }
-                }*/
                 if (dayLogEntries.isNotEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (selectionMode) {
@@ -1018,11 +968,13 @@ OutlinedButton(onClick = {
                     }
                 }
             }
+
             DailySummaryCard(dateKey = date)
-            if (dayLogEntries.any { it.source == "manual_note" }) {
+
+            if (dayLogEntries.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = {
-                        treeShownIds = dayLogEntries.filter { it.source == "manual_note" }.map { it.id }.toSet()
+                        treeShownIds = dayLogEntries.map { it.id }.toSet()
                     }) { Text("▾ Show all note trees") }
                     TextButton(onClick = {
                         treeShownIds = emptySet()
@@ -1039,7 +991,7 @@ OutlinedButton(onClick = {
                     val displayLabel = when (entry.source) {
                         "app_usage" -> {
                             val minutes = (entry.durationMillis ?: 0L) / 60000
-                            "${entry.appName} — ${minutes}m"
+                            "${entry.appName} — ${minutes}m" + (entry.note?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: "")
                         }
                         "screen_content" -> "${entry.appName}${entry.note?.let { " — $it" } ?: ""}"
                         else -> entry.note ?: entry.source
@@ -1127,8 +1079,6 @@ OutlinedButton(onClick = {
                             }
                             Spacer(Modifier.height(6.dp))
                             LocationReminderSection(
-                               // items = editingLocationReminders,
-                                parentPath = listOf("📝 " + editingTitle.trim().ifBlank { "Untitled note" }),
                                 items = editingLocationReminders,
                                 onItemsChanged = { editingLocationReminders = it },
                                 registrationStatus = editingGeofenceStatus,
@@ -1177,9 +1127,11 @@ OutlinedButton(onClick = {
                                             lastModifiedMillis = System.currentTimeMillis()
                                         )
                                         AppDatabase.getInstance(context).logEntryDao().update(updated)
-                                       // SubNoteManager.deleteRemoved(context, entry.note, updated.note)
+                                        AttachmentCleanup.deleteIfUnreferenced(
+                                            context,
+                                            AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated)
+                                        )
                                         SubNoteManager.deleteRemovedBetween(context, entry, updated)
-                                        AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated))
                                         NoteReminderScheduler.cancelReminder(context, entry.id)
                                         NoteReminderScheduler.cancelDue(context, entry.id)
                                         NoteReminderScheduler.cancelRepeat(context, entry.id)
@@ -1205,12 +1157,12 @@ OutlinedButton(onClick = {
                                             }
                                         }
                                         CalendarWriter.refreshEntry(context, updated)
+                                        treeRefresh++
                                         editingEntryId = null
                                         openDate(date)
                                     }
                                 }) { Text("Save") }
-                               // TextButton(onClick = { editingEntryId = null }) { Text("Cancel") }
-                               TextButton(onClick = {
+                                TextButton(onClick = {
                                     SubNoteManager.launchDeleteWithCascade(
                                         context,
                                         SubNoteManager.idsInItems(editingLocationReminders) - SubNoteManager.idsInEntry(entry)
@@ -1238,8 +1190,8 @@ OutlinedButton(onClick = {
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    //Text("$time  •  $titledLabel", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                                    val isTreeable = entry.source == "manual_note"
+                                    // Every row (note, usage, screen log) can open its tree.
+                                    val isTreeable = true
                                     val treeOpen = entry.id in treeShownIds
                                     Text(
                                         (if (isTreeable) (if (treeOpen) "▾ " else "▸ ") else "") + "$time  •  $titledLabel",
@@ -1257,7 +1209,6 @@ OutlinedButton(onClick = {
                                             editingTitle = entry.title ?: ""
                                             editingNoteText = entry.note ?: ""
                                             editingLocationText = entry.locationUrl ?: ""
-                                            //editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName)
                                             editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName).distinct()
                                             editingReminderAtMillis = entry.reminderAtMillis
                                             editingDueAtMillis = entry.dueAtMillis
@@ -1302,7 +1253,7 @@ OutlinedButton(onClick = {
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                 }
-                                AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
+                                AttachmentListUtil.toList(entry.attachmentFileName).distinct().forEach { name ->
                                     ResolvingAttachmentPreview(name = name)
                                 }
                                 if (entry.id in treeShownIds) {
@@ -1314,7 +1265,9 @@ OutlinedButton(onClick = {
                                             collapsedNodeKeys = if (k in collapsedNodeKeys) collapsedNodeKeys - k else collapsedNodeKeys + k
                                         },
                                         onOpen = { node ->
-                                            if (node.kind == NodeKind.SUB_NOTE) {
+                                            if (node.kind == NodeKind.INFO) {
+                                                // read-only detail line
+                                            } else if (node.kind == NodeKind.SUB_NOTE) {
                                                 node.entryId?.let { openNoteInFullScreen(it) }
                                             } else {
                                                 scope.launch {
@@ -1352,6 +1305,8 @@ OutlinedButton(onClick = {
             calendarStatus?.let { status -> Text(status, style = MaterialTheme.typography.bodySmall) }
         }
     }
+
+    // ---- Location note opened from the tree: saves straight back into its parent row ----
     locationNoteTarget?.let { (parent, item) ->
         Dialog(
             onDismissRequest = { locationNoteTarget = null },
@@ -1423,7 +1378,6 @@ OutlinedButton(onClick = {
 
     confirmDeleteSelectedForDate?.let { dateKey ->
         ConfirmDeleteDialog(
-           // message = "Delete ${selectedEntryIds.size} selected entries? This cannot be undone.",
             message = "Delete ${selectedEntryIds.size} selected entries, including their sub-notes, " +
                 "attachments and reminders? This cannot be undone.",
             onConfirm = {
@@ -1451,8 +1405,7 @@ OutlinedButton(onClick = {
             val initialText = if (editingId == null) noteText else (loadedEntry?.note ?: "")
             val initialLocation = if (editingId == null) locationText else (loadedEntry?.locationUrl ?: "")
             val initialTags = if (editingId == null) noteTags else TagListUtil.toList(loadedEntry?.tags)
-           // val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName)
-           val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName).distinct()
+            val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName).distinct()
             val initialReminder = if (editingId == null) reminderAtMillis else loadedEntry?.reminderAtMillis
             val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
             val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
@@ -1475,8 +1428,7 @@ OutlinedButton(onClick = {
                 highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
                 onSave = { result ->
                     if (editingId == null) {
-                        // Save immediately — same behavior as the main "Save entry"
-                        // button, so a new note is never left half-saved.
+                        // Save immediately — same behavior as the main "Save entry" button.
                         if (result.title.isNotBlank() || result.text.isNotBlank() || result.locationUrl.isNotBlank() ||
                             result.newAttachments.isNotEmpty() || pendingAttachments.isNotEmpty()
                         ) {
@@ -1486,7 +1438,7 @@ OutlinedButton(onClick = {
                                 val targetDateKey = selectedDate ?: todayKey
                                 val entryTimestamp = result.noteDateTimeMillis ?: selectedCalendarDateTimeMillis ?: nowMillis
                                 val finalRepeatConfig = RepeatConfig.fromStored(result.repeatRule)
-                                val finalAttachments = pendingAttachments + result.newAttachments
+                                val finalAttachments = (pendingAttachments + result.newAttachments).distinctBy { it.name }
 
                                 val newId = AppDatabase.getInstance(context).logEntryDao().insert(
                                     LogEntry(
@@ -1527,7 +1479,7 @@ OutlinedButton(onClick = {
                     } else {
                         scope.launch {
                             loadedEntry?.let { entry ->
-                                val finalAttachments = result.existingAttachmentNames + result.newAttachments.map { it.name }
+                                val finalAttachments = (result.existingAttachmentNames + result.newAttachments.map { it.name }).distinct()
                                 val updated = entry.copy(
                                     title = result.title.ifBlank { null },
                                     note = result.text.ifBlank { null },
@@ -1542,7 +1494,10 @@ OutlinedButton(onClick = {
                                     lastModifiedMillis = System.currentTimeMillis()
                                 )
                                 AppDatabase.getInstance(context).logEntryDao().update(updated)
-                                AttachmentCleanup.deleteIfUnreferenced(context, AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated))
+                                AttachmentCleanup.deleteIfUnreferenced(
+                                    context,
+                                    AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated)
+                                )
                                 NoteReminderScheduler.cancelReminder(context, entry.id)
                                 NoteReminderScheduler.cancelDue(context, entry.id)
                                 NoteReminderScheduler.cancelRepeat(context, entry.id)
@@ -1573,6 +1528,7 @@ OutlinedButton(onClick = {
                 onCancel = {
                     showFullScreenEditor = false
                     fullScreenHighlightQuery = null
+                    treeRefresh++
                 }
             )
         }
@@ -1662,8 +1618,6 @@ private fun CalendarMonthView(
 }
 @Composable
 private fun SettingsPanel(
-  //  import androidx.compose.ui.text.input.PasswordVisualTransformation
-//import com.example.phonediary.ai.GeminiKeyStore
     context: Context,
     blockedApps: Set<String>,
     newBlockedPackage: String,
@@ -1674,32 +1628,15 @@ private fun SettingsPanel(
     onThemeChange: (AppTheme) -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    var geminiKeyInput by remember { mutableStateOf("") }
-    var geminiKeyTick by remember { mutableStateOf(0) }
-    val modelInUse = remember(geminiKeyTick) { GeminiModelStore.get(context) }
-        Text(
-            if (modelInUse != null) "Model: $modelInUse" else "Model: chosen automatically on first Generate",
-            style = MaterialTheme.typography.bodySmall
-        )
 
-    // Bumped whenever the app resumes or a system settings screen returns,
-    // forcing every permission/status check below to re-run.
+    // Bumped whenever the app resumes or a system settings screen returns.
     var refreshTick by remember { mutableStateOf(0) }
-    var unusedFiles by remember { mutableStateOf<List<String>?>(null) }
-    var cleanupStatus by remember { mutableStateOf<String?>(null) }
-    var orphanSubNotes by remember { mutableStateOf<Int?>(null) }
-    var modelList by remember { mutableStateOf<List<String>>(emptyList()) }
-    var modelMenuOpen by remember { mutableStateOf(false) }
-    var modelStatus by remember { mutableStateOf<String?>(null) }
-    var manualModel by remember(geminiKeyTick) { mutableStateOf(GeminiModelStore.getManual(context)) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 refreshTick++
-                // Coming back from system settings: re-register geofences now
-                // that permission / device Location may have changed.
                 scope.launch { GeofenceHelper.resyncAllEntries(context) }
             }
         }
@@ -1707,8 +1644,6 @@ private fun SettingsPanel(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // All system-settings screens open through this launcher so Back returns
-    // to the app (rather than the home screen) and status refreshes on return.
     val settingsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { refreshTick++ }
@@ -1731,6 +1666,17 @@ private fun SettingsPanel(
     var restoreStatus by remember { mutableStateOf<String?>(null) }
     var isRestoring by remember { mutableStateOf(false) }
     var confirmRestoreUri by remember { mutableStateOf<Uri?>(null) }
+
+    var unusedFiles by remember { mutableStateOf<List<String>?>(null) }
+    var cleanupStatus by remember { mutableStateOf<String?>(null) }
+    var orphanSubNotes by remember { mutableStateOf<Int?>(null) }
+
+    var geminiKeyInput by remember { mutableStateOf("") }
+    var geminiKeyTick by remember { mutableStateOf(0) }
+    var modelList by remember { mutableStateOf<List<String>>(emptyList()) }
+    var modelMenuOpen by remember { mutableStateOf(false) }
+    var modelStatus by remember { mutableStateOf<String?>(null) }
+    var manualModel by remember(geminiKeyTick) { mutableStateOf(GeminiModelStore.getManual(context)) }
 
     val restorePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -1846,12 +1792,20 @@ private fun SettingsPanel(
                 refreshTick++
             }
         }) { Text("Re-register all location reminders") }
+
+        // ---- Cleanup tools ----
+        Spacer(Modifier.height(12.dp))
+        Divider()
+        Spacer(Modifier.height(8.dp))
+        Text("Cleanup", style = MaterialTheme.typography.titleSmall)
+
         OutlinedButton(onClick = {
             scope.launch {
                 val n = CalendarWriter.refreshAll(context)
                 cleanupStatus = "Updated $n calendar event(s)"
             }
         }) { Text("Fix all calendar events") }
+
         OutlinedButton(onClick = {
             scope.launch {
                 val removed = UsageCleanup.run(context)
@@ -1860,10 +1814,6 @@ private fun SettingsPanel(
             }
         }) { Text("Clean up usage clutter") }
 
-        Spacer(Modifier.height(12.dp))
-        Divider()
-        Spacer(Modifier.height(8.dp))
-        Text("Attachment files", style = MaterialTheme.typography.titleSmall)
         OutlinedButton(onClick = {
             scope.launch {
                 val found = AttachmentCleanup.findUnreferencedFiles(context)
@@ -1876,6 +1826,14 @@ private fun SettingsPanel(
                 }
             }
         }) { Text("Find unused attachment files") }
+
+        OutlinedButton(onClick = {
+            scope.launch {
+                val n = SubNoteManager.findOrphans(context).size
+                if (n == 0) { cleanupStatus = "No unused sub-notes found" } else { orphanSubNotes = n }
+            }
+        }) { Text("Find unused sub-notes") }
+
         cleanupStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
         unusedFiles?.let { files ->
@@ -1892,12 +1850,6 @@ private fun SettingsPanel(
                 onDismiss = { unusedFiles = null }
             )
         }
-        OutlinedButton(onClick = {
-            scope.launch {
-                val n = SubNoteManager.findOrphans(context).size
-                if (n == 0) { cleanupStatus = "No unused sub-notes found" } else { orphanSubNotes = n }
-            }
-        }) { Text("Find unused sub-notes") }
 
         orphanSubNotes?.let { n ->
             ConfirmDeleteDialog(
@@ -1912,13 +1864,20 @@ private fun SettingsPanel(
                 onDismiss = { orphanSubNotes = null }
             )
         }
+
+        // ---- Gemini ----
         Spacer(Modifier.height(12.dp))
         Divider()
         Spacer(Modifier.height(8.dp))
-        Text("Gemini (daily summary)", style = MaterialTheme.typography.titleSmall)
+        Text("Gemini (daily summary & Ask AI)", style = MaterialTheme.typography.titleSmall)
         val keyHint = remember(geminiKeyTick) { GeminiKeyStore.hint(context) }
         Text(
             if (keyHint != null) "API key saved ($keyHint)" else "No API key saved",
+            style = MaterialTheme.typography.bodySmall
+        )
+        val modelInUse = remember(geminiKeyTick) { GeminiModelStore.get(context) }
+        Text(
+            if (modelInUse != null) "Last working model: $modelInUse" else "Model: chosen automatically on first use",
             style = MaterialTheme.typography.bodySmall
         )
         OutlinedTextField(
@@ -1944,21 +1903,20 @@ private fun SettingsPanel(
                 OutlinedButton(onClick = {
                     GeminiKeyStore.clear(context)
                     GeminiModelStore.clear(context)
+                    modelList = emptyList()
                     geminiKeyTick++
                 }) { Text("Remove key") }
             }
         }
-      /*  Text(
-            "Used only when you tap Generate. The day's notes and app usage are sent to Google to write the summary, " +
-                "so it needs internet. On Google's free tier, submitted content may be used to improve their products. " +
-                "Check Google's terms before sending anything private.",
-            style = MaterialTheme.typography.labelSmall
-        )*/
+
         Spacer(Modifier.height(8.dp))
         Text("Gemini model", style = MaterialTheme.typography.labelMedium)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box {
-                OutlinedButton(onClick = { modelMenuOpen = true }, enabled = modelList.isNotEmpty() || manualModel != null) {
+                OutlinedButton(
+                    onClick = { modelMenuOpen = true },
+                    enabled = modelList.isNotEmpty() || manualModel != null
+                ) {
                     Text(manualModel ?: "Auto (recommended)")
                 }
                 DropdownMenu(expanded = modelMenuOpen, onDismissRequest = { modelMenuOpen = false }) {
@@ -1966,7 +1924,8 @@ private fun SettingsPanel(
                         text = { Text("Auto (recommended)") },
                         onClick = {
                             GeminiModelStore.setManual(context, null)
-                            manualModel = null; modelMenuOpen = false
+                            manualModel = null
+                            modelMenuOpen = false
                         }
                     )
                     modelList.forEach { name ->
@@ -1974,7 +1933,8 @@ private fun SettingsPanel(
                             text = { Text(name) },
                             onClick = {
                                 GeminiModelStore.setManual(context, name)
-                                manualModel = name; modelMenuOpen = false
+                                manualModel = name
+                                modelMenuOpen = false
                             }
                         )
                     }
@@ -2001,8 +1961,9 @@ private fun SettingsPanel(
         )
         Text(
             "Used only when you tap Generate or ask a question in Ask AI. The notes and app usage needed to answer " +
-                "are sent to Google, so it needs internet. On Google's free tier, submitted content may be used to " +
-                "improve their products. Check Google's terms before sending anything private.",
+                "(and web search queries, if 🌐 Web is on) are sent to Google, so it needs internet. On Google's free " +
+                "tier, submitted content may be used to improve their products. Check Google's terms before sending " +
+                "anything private.",
             style = MaterialTheme.typography.labelSmall
         )
 
@@ -2137,4 +2098,3 @@ private fun SettingsPanel(
         }
     }
 }
-
