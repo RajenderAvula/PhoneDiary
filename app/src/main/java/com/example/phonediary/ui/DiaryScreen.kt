@@ -69,6 +69,8 @@ import com.example.phonediary.ai.GeminiKeyStore
 import com.example.phonediary.ai.GeminiModelStore
 import com.example.phonediary.ai.GeminiClient
 import com.example.phonediary.files.UsageCleanup
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 
 //private enum class DiaryTab { HOME, SETTINGS }
@@ -250,6 +252,10 @@ private fun HomeTabContent() {
 
     var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
     var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
+    var treeShownIds by remember { mutableStateOf(setOf<Long>()) }
+    var collapsedNodeKeys by remember { mutableStateOf(setOf<String>()) }
+    var treeRefresh by remember { mutableStateOf(0) }
+    var locationNoteTarget by remember { mutableStateOf<Pair<LogEntry, LocationReminderItem>?>(null) }
 
     // ---- OCR image scan (crop/border adjustment) ----
     var scanImageUri by remember { mutableStateOf<Uri?>(null) }
@@ -1013,6 +1019,17 @@ OutlinedButton(onClick = {
                 }
             }
             DailySummaryCard(dateKey = date)
+            if (dayLogEntries.any { it.source == "manual_note" }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        treeShownIds = dayLogEntries.filter { it.source == "manual_note" }.map { it.id }.toSet()
+                    }) { Text("▾ Show all note trees") }
+                    TextButton(onClick = {
+                        treeShownIds = emptySet()
+                        collapsedNodeKeys = emptySet()
+                    }) { Text("▸ Hide all") }
+                }
+            }
 
             if (dayLogEntries.isEmpty()) {
                 Text("No entries logged for this day yet.")
@@ -1221,7 +1238,18 @@ OutlinedButton(onClick = {
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("$time  •  $titledLabel", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                                    //Text("$time  •  $titledLabel", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                                    val isTreeable = entry.source == "manual_note"
+                                    val treeOpen = entry.id in treeShownIds
+                                    Text(
+                                        (if (isTreeable) (if (treeOpen) "▾ " else "▸ ") else "") + "$time  •  $titledLabel",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f).then(
+                                            if (isTreeable && !selectionMode) Modifier.clickable {
+                                                treeShownIds = if (treeOpen) treeShownIds - entry.id else treeShownIds + entry.id
+                                            } else Modifier
+                                        )
+                                    )
                                     if (!selectionMode) {
                                         TextButton(onClick = { openNoteInFullScreen(entry.id) }) { Text("⛶") }
                                         TextButton(onClick = {
@@ -1277,6 +1305,31 @@ OutlinedButton(onClick = {
                                 AttachmentListUtil.toList(entry.attachmentFileName).forEach { name ->
                                     ResolvingAttachmentPreview(name = name)
                                 }
+                                if (entry.id in treeShownIds) {
+                                    NoteTreeView(
+                                        entry = entry,
+                                        refreshKey = treeRefresh,
+                                        collapsed = collapsedNodeKeys,
+                                        onToggleBranch = { k ->
+                                            collapsedNodeKeys = if (k in collapsedNodeKeys) collapsedNodeKeys - k else collapsedNodeKeys + k
+                                        },
+                                        onOpen = { node ->
+                                            if (node.kind == NodeKind.SUB_NOTE) {
+                                                node.entryId?.let { openNoteInFullScreen(it) }
+                                            } else {
+                                                scope.launch {
+                                                    val parent = AppDatabase.getInstance(context).logEntryDao()
+                                                        .getById(node.parentEntryId ?: -1L)
+                                                    val item = parent?.let {
+                                                        LocationReminderListUtil.fromStored(it.locationReminders)
+                                                            .firstOrNull { i -> i.id == node.locationId }
+                                                    }
+                                                    if (parent != null && item != null) locationNoteTarget = parent to item
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1297,6 +1350,63 @@ OutlinedButton(onClick = {
                 OutlinedButton(onClick = { openCalendarApp() }) { Text("Open Calendar") }
             }
             calendarStatus?.let { status -> Text(status, style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+    locationNoteTarget?.let { (parent, item) ->
+        Dialog(
+            onDismissRequest = { locationNoteTarget = null },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = false
+            )
+        ) {
+            Surface(modifier = Modifier.fillMaxSize()) {
+                FullScreenNoteEditor(
+                    initialTitle = item.title,
+                    initialText = item.text,
+                    initialLocationUrl = item.locationUrl,
+                    initialTags = item.tags,
+                    initialAttachmentNames = item.attachmentNames,
+                    initialReminderAtMillis = null,
+                    initialDueAtMillis = null,
+                    initialRepeatRule = item.repeatRule,
+                    initialNoteDateTimeMillis = null,
+                    isLocationNote = true,
+                    locationNoteName = item.label,
+                    onSave = { r ->
+                        scope.launch {
+                            val dao = AppDatabase.getInstance(context).logEntryDao()
+                            val latest = dao.getById(parent.id) ?: return@launch
+                            val newItem = item.copy(
+                                title = r.title.trim(),
+                                text = r.text,
+                                locationUrl = r.locationUrl.trim(),
+                                tags = r.tags,
+                                attachmentNames = (r.existingAttachmentNames + r.newAttachments.map { it.name }).distinct(),
+                                repeatRule = r.repeatRule
+                            )
+                            val items = LocationReminderListUtil.fromStored(latest.locationReminders)
+                                .map { if (it.id == item.id) newItem else it }
+                            val updated = latest.copy(
+                                locationReminders = LocationReminderListUtil.toStored(items),
+                                lastModifiedMillis = System.currentTimeMillis()
+                            )
+                            dao.update(updated)
+                            AttachmentCleanup.deleteIfUnreferenced(
+                                context, AttachmentCleanup.namesOf(latest) - AttachmentCleanup.namesOf(updated)
+                            )
+                            SubNoteManager.deleteRemovedBetween(context, latest, updated)
+                            if (newItem.enabled && newItem.repeatRule != item.repeatRule) {
+                                GeofenceHelper.registerGeofence(context, parent.id, newItem)
+                            }
+                            treeRefresh++
+                            locationNoteTarget = null
+                        }
+                    },
+                    onCancel = { locationNoteTarget = null; treeRefresh++ }
+                )
+            }
         }
     }
 
@@ -1361,6 +1471,7 @@ OutlinedButton(onClick = {
                 initialNoteDateTimeMillis = initialNoteDateTime,
                 initialLocationReminders = initialLocReminders,
                 existingEntryId = editingId,
+                isSubNote = loadedEntry?.source == SubNoteManager.SOURCE,
                 highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
                 onSave = { result ->
                     if (editingId == null) {
@@ -1452,6 +1563,7 @@ OutlinedButton(onClick = {
                                 CalendarWriter.refreshEntry(context, updated)
                                 loadAllTags()
                                 selectedDate?.let { openDate(it) }
+                                treeRefresh++
                             }
                         }
                     }
