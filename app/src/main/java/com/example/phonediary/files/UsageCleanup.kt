@@ -46,8 +46,16 @@ object UsageCleanup {
 }
 
 /** True when the user has added their own content to a log row. */
+/*private fun LogEntry.hasUserContent(): Boolean =
+    !title.isNullOrBlank() || !tags.isNullOrBlank() || !locationReminders.isNullOrBlank() ||
+        !attachmentFileName.isNullOrBlank() || reminderAtMillis != null || dueAtMillis != null ||
+        (source == "app_usage" && !note.isNullOrBlank()) ||
+        SubNoteManager.idsIn(note).isNotEmpty()*/
+
+        /** True when the user has added their own content to a log row. */
 private fun LogEntry.hasUserContent(): Boolean =
     !title.isNullOrBlank() || !tags.isNullOrBlank() || !locationReminders.isNullOrBlank() ||
         !attachmentFileName.isNullOrBlank() || reminderAtMillis != null || dueAtMillis != null ||
         (source == "app_usage" && !note.isNullOrBlank()) ||
+        (source == "screen_content" && lastModifiedMillis - timestampMillis > 5_000L) ||
         SubNoteManager.idsIn(note).isNotEmpty()
