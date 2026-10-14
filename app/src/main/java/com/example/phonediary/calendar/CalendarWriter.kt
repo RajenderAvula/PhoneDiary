@@ -41,6 +41,10 @@ object CalendarWriter {
             PackageManager.PERMISSION_GRANTED
     }
 
+    /** Only real notes and sub-notes go to the Calendar. Usage and screen-log rows never do. */
+    private fun isCalendarWorthy(entry: LogEntry) =
+        entry.source == "manual_note" || entry.source == "sub_note"
+
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -166,7 +170,7 @@ object CalendarWriter {
                 "Used ${entry.appName} for ${minutes}m"
             }
             "screen_content" -> "${entry.appName}${entry.note?.let { ": $it" } ?: ""}"
-            "manual_note" -> entry.note ?: ""
+            "manual_note", "sub_note" -> entry.note ?: ""
             else -> entry.note ?: entry.appName ?: entry.source
         }
 
@@ -187,12 +191,13 @@ object CalendarWriter {
     }
 
     /**
-     * Writes/updates a single timed calendar event for this entry.
-     * TITLE is the note's own title/text (so it shows properly in any
-     * calendar app). The event starts at the note's time and lasts
-     * EVENT_DURATION_MILLIS (0 = it ends at the same moment it starts).
+     * Writes/updates a single calendar event for a note or sub-note. TITLE is
+     * the note's own title/text (so it shows properly in any calendar app).
+     * The event starts at the note's time and lasts EVENT_DURATION_MILLIS.
+     * Other kinds of rows (usage, screen log) are ignored.
      */
     fun writeEntryEvent(context: Context, entry: LogEntry): Boolean {
+        if (!isCalendarWorthy(entry)) return false
         if (!hasCalendarPermission(context)) return false
         val calendarId = findWritableCalendarId(context) ?: return false
 
@@ -234,12 +239,14 @@ object CalendarWriter {
     suspend fun refreshDate(context: Context, dateKey: String): Boolean {
         if (!hasCalendarPermission(context)) return false
         val entries = AppDatabase.getInstance(context).logEntryDao().getEntriesForDate(dateKey)
+            .filter { isCalendarWorthy(it) }
 
         var allSucceeded = true
         entries.forEach { entry ->
             if (!writeEntryEvent(context, entry)) allSucceeded = false
         }
 
+        // Anything else for this day (including old usage events) is removed as an orphan.
         cleanupOrphanedEventsForDate(context, dateKey, entries.map { it.id }.toSet())
         return allSucceeded
     }
@@ -249,15 +256,18 @@ object CalendarWriter {
     }
 
     /**
-     * Rewrites the calendar event of every entry. Run once after changing the
-     * event duration so existing 30-minute events are shortened. Returns how
-     * many events were written.
+     * Rewrites the calendar event of every note and removes leftover events
+     * (such as old usage events). Run once after changing the event duration
+     * so existing events are fixed. Returns how many events were written.
      */
     suspend fun refreshAll(context: Context): Int {
         if (!hasCalendarPermission(context)) return 0
+        val notes = AppDatabase.getInstance(context).logEntryDao().getAllEntries()
+            .filter { isCalendarWorthy(it) }
         var written = 0
-        AppDatabase.getInstance(context).logEntryDao().getAllEntries().forEach { entry ->
-            if (writeEntryEvent(context, entry)) written++
+        notes.groupBy { it.dateKey }.forEach { (dateKey, dayNotes) ->
+            dayNotes.forEach { if (writeEntryEvent(context, it)) written++ }
+            cleanupOrphanedEventsForDate(context, dateKey, dayNotes.map { it.id }.toSet())
         }
         return written
     }
