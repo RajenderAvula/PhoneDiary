@@ -398,7 +398,7 @@ object GeminiClient {
             "Gemini rejected the API key. Check it in Settings."
         else "Gemini rejected the request: ${apiMessage ?: "bad request"}"
         401, 403 -> "The API key isn't allowed to use Gemini. Check it in Settings."
-        429 -> "Gemini usage limit reached. Wait a minute and try again."
+        429 -> "Gemini rate limit reached (free tier). Wait a minute, or turn 🌐 Web off."
         in 500..599 -> "Gemini is having problems. Try again shortly."
         else -> "Gemini error $code: ${apiMessage ?: "unknown"}"
     }
