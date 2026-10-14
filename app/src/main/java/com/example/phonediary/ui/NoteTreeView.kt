@@ -15,8 +15,10 @@ import com.example.phonediary.data.LogEntry
 import com.example.phonediary.files.SubNoteManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Locale
 
-enum class NodeKind { SUB_NOTE, LOCATION_NOTE }
+enum class NodeKind { SUB_NOTE, LOCATION_NOTE, INFO }
 
 class NoteNode(
     val key: String,
@@ -24,7 +26,7 @@ class NoteNode(
     val label: String,
     val detail: String,
     val entryId: Long?,          // sub-note id
-    val parentEntryId: Long?,    // for a location note: the note that owns it
+    val parentEntryId: Long?,    // for a location note: the row that owns it
     val locationId: String?,
     val children: List<NoteNode>
 ) {
@@ -34,8 +36,71 @@ class NoteNode(
 object NoteTree {
     private const val MAX_DEPTH = 12
 
-    suspend fun build(context: Context, root: LogEntry): List<NoteNode> = withContext(Dispatchers.IO) {
-        childrenOf(context, root, mutableSetOf(root.id), 1)
+    private fun info(key: String, label: String, detail: String = "", children: List<NoteNode> = emptyList()) =
+        NoteNode(key, NodeKind.INFO, label, detail, null, null, null, children)
+
+    private fun minutes(millis: Long?): String {
+        val m = (millis ?: 0L) / 60_000
+        return if (m >= 60) "${m / 60}h ${"%02d".format(m % 60)}m" else "${m}m"
+    }
+
+    private fun clock(millis: Long): String =
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(millis)
+
+    /** Tree for any row: notes get their sub-notes; usage and screen rows get detail lines plus their own sub-notes. */
+    suspend fun buildAny(context: Context, entry: LogEntry): List<NoteNode> = withContext(Dispatchers.IO) {
+        when (entry.source) {
+            "app_usage" -> usageNodes(context, entry) + childrenOf(context, entry, mutableSetOf(entry.id), 1)
+            "screen_content" -> screenNodes(context, entry) + childrenOf(context, entry, mutableSetOf(entry.id), 1)
+            else -> childrenOf(context, entry, mutableSetOf(entry.id), 1)
+        }
+    }
+
+    private suspend fun usageNodes(context: Context, entry: LogEntry): List<NoteNode> {
+        val dao = AppDatabase.getInstance(context).logEntryDao()
+        val sameDay = dao.getEntriesForDate(entry.dateKey).filter { it.source == "app_usage" }
+        val dayTotal = sameDay.sumOf { it.durationMillis ?: 0L }
+        val mine = entry.durationMillis ?: 0L
+        val share = if (dayTotal > 0) (mine * 100 / dayTotal) else 0L
+        val nodes = mutableListOf(
+            info("u${entry.id}_t", "⏱ Total today", minutes(mine)),
+            info("u${entry.id}_s", "📊 Share of the day's usage", "$share% of ${minutes(dayTotal)}"),
+            info("u${entry.id}_l", "🕒 Last used", clock(entry.timestampMillis))
+        )
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val base = runCatching { fmt.parse(entry.dateKey) }.getOrNull()
+        if (base != null) {
+            val earlier = (1..6).mapNotNull { back ->
+                val key = fmt.format(base.time - back * 24L * 60 * 60 * 1000)
+                val row = dao.getEntriesForDate(key)
+                    .filter { it.source == "app_usage" && it.appName == entry.appName }
+                    .maxByOrNull { it.durationMillis ?: 0L }
+                row?.let { info("u${entry.id}_d$key", key, minutes(it.durationMillis)) }
+            }
+            if (earlier.isNotEmpty()) {
+                nodes += info("u${entry.id}_h", "📅 Previous days", "${earlier.size} day(s)", earlier)
+            }
+        }
+        return nodes
+    }
+
+    private suspend fun screenNodes(context: Context, entry: LogEntry): List<NoteNode> {
+        val dao = AppDatabase.getInstance(context).logEntryDao()
+        val opens = dao.getEntriesForDate(entry.dateKey)
+            .filter { it.source == "screen_content" && it.appName == entry.appName }
+            .sortedBy { it.timestampMillis }
+        val nodes = mutableListOf<NoteNode>()
+        nodes += info("c${entry.id}_a", "📱 App", entry.appName.orEmpty())
+        nodes += info("c${entry.id}_t", "🕒 Opened at", clock(entry.timestampMillis))
+        entry.note?.takeIf { it.isNotBlank() }?.let { nodes += info("c${entry.id}_n", "🖥 Screen", it) }
+        val others = opens.filter { it.id != entry.id }
+        if (others.isNotEmpty()) {
+            nodes += info(
+                "c${entry.id}_o", "↻ Other opens today", "${others.size}",
+                others.map { info("c${entry.id}_o${it.id}", clock(it.timestampMillis), it.note.orEmpty()) }
+            )
+        }
+        return nodes
     }
 
     private suspend fun childrenOf(
@@ -103,7 +168,7 @@ fun NoteTreeView(
     var localTick by remember { mutableStateOf(0) }
 
     LaunchedEffect(entry.id, entry.lastModifiedMillis, refreshKey, localTick) {
-        nodes = NoteTree.build(context, entry)
+        nodes = NoteTree.buildAny(context, entry)
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp)) {
@@ -118,7 +183,7 @@ fun NoteTreeView(
         }
         val list = nodes
         if (list != null && list.isEmpty()) {
-            Text("No sub-notes or location notes inside.", style = MaterialTheme.typography.bodySmall)
+            Text("Nothing inside.", style = MaterialTheme.typography.bodySmall)
         }
         list?.forEach { NodeItem(it, 0, collapsed, onToggleBranch, onOpen) }
     }
