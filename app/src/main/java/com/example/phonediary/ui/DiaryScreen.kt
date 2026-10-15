@@ -71,6 +71,8 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
+import com.example.phonediary.files.NotePathResolver
+import com.example.phonediary.files.NoteTreeOps
 
 private enum class DiaryTab { HOME, ASK, SEARCH, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -1095,6 +1097,22 @@ private fun HomeTabContent() {
                                     onToggleBranch = { k ->
                                         collapsedNodeKeys = if (k in collapsedNodeKeys) collapsedNodeKeys - k else collapsedNodeKeys + k
                                     },
+                                    onDelete = { node ->
+                                        val nested = node.descendantCount()
+                                        confirmAction = "Delete \"${node.label}\"" +
+                                            (if (nested > 0) " and the $nested note(s) inside it" else "") +
+                                            ", with their attachments and reminders? This cannot be undone." to {
+                                            scope.launch {
+                                                if (node.kind == NodeKind.SUB_NOTE) {
+                                                    node.entryId?.let { NoteTreeOps.deleteSubNote(context, it) }
+                                                } else if (node.parentEntryId != null && node.locationId != null) {
+                                                    NoteTreeOps.deleteLocationNote(context, node.parentEntryId, node.locationId)
+                                                }
+                                                treeRefresh++
+                                                selectedDate?.let { openDate(it) }
+                                            }
+                                        }
+                                    },
                                     onOpen = { node ->
                                         if (node.kind == NodeKind.INFO) {
                                             // read-only detail line
@@ -1138,6 +1156,8 @@ private fun HomeTabContent() {
 
     // ---- Location note opened from the tree: autosaves straight into its parent row ----
     locationNoteTarget?.let { (parent, item) ->
+        var locParentPath by remember(parent.id) { mutableStateOf(listOf<String>()) }
+        LaunchedEffect(parent.id) { locParentPath = NotePathResolver.pathOfEntry(context, parent) }
         Dialog(
             onDismissRequest = { locationNoteTarget = null; treeRefresh++ },
             properties = DialogProperties(
@@ -1161,7 +1181,15 @@ private fun HomeTabContent() {
                    // locationNoteName = item.label,
                     isLocationNote = true,
                     locationNoteName = item.label,
-                    parentPath = listOf("📝 " + (parent.title?.trim()?.takeIf { it.isNotEmpty() } ?: "Untitled note")),
+                  //  parentPath = listOf("📝 " + (parent.title?.trim()?.takeIf { it.isNotEmpty() } ?: "Untitled note")),
+                    parentPath = locParentPath,
+                    onDeleteSelf = {
+                        scope.launch {
+                            NoteTreeOps.deleteLocationNote(context, parent.id, item.id)
+                            locationNoteTarget = null
+                            treeRefresh++
+                        }
+                    },
                     onAutoSave = { r ->
                         scope.launch {
                             val dao = AppDatabase.getInstance(context).logEntryDao()
@@ -1243,9 +1271,18 @@ private fun HomeTabContent() {
             loadedEntry = AppDatabase.getInstance(context).logEntryDao().getById(editingId)
         }
 
-        val entry = loadedEntry
+       // val entry = loadedEntry
+       // if (entry != null) {
+            //FullScreenNoteEditor(
+            val entry = loadedEntry
         if (entry != null) {
+            var editorParentPath by remember(entry.id) { mutableStateOf(listOf<String>()) }
+            LaunchedEffect(entry.id) {
+                editorParentPath = if (entry.source == SubNoteManager.SOURCE)
+                    NotePathResolver.parentPathOfSubNote(context, entry) else emptyList()
+            }
             FullScreenNoteEditor(
+                parentPath = editorParentPath,
                 initialTitle = entry.title ?: "",
                 initialText = entry.note ?: "",
                 initialLocationUrl = entry.locationUrl ?: "",
@@ -1259,6 +1296,16 @@ private fun HomeTabContent() {
                 existingEntryId = entry.id,
                 isSubNote = entry.source == SubNoteManager.SOURCE,
                 highlightQuery = fullScreenHighlightQuery,
+                onDeleteSelf = if (entry.source == SubNoteManager.SOURCE) {
+                    {
+                        scope.launch {
+                            NoteTreeOps.deleteSubNote(context, entry.id)
+                            showFullScreenEditor = false
+                            treeRefresh++
+                            selectedDate?.let { openDate(it) }
+                        }
+                    }
+                } else null,
                 onAutoSave = { result ->
                     scope.launch { NoteSaver.update(context, entry, result) }
                 },
