@@ -3,14 +3,12 @@ package com.example.phonediary.files
 import android.content.Context
 import com.example.phonediary.calendar.CalendarWriter
 import com.example.phonediary.data.AppDatabase
-import com.example.phonediary.data.AttachmentListUtil
 import com.example.phonediary.data.LocationReminderItem
 import com.example.phonediary.data.LocationReminderListUtil
 import com.example.phonediary.data.LogEntry
 import com.example.phonediary.reminders.GeofenceHelper
 import com.example.phonediary.reminders.NoteReminderScheduler
 import com.example.phonediary.ui.FullScreenNoteResult
-import com.example.phonediary.ui.RepeatScheduling
 import com.example.phonediary.ui.markerRegex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,7 +22,6 @@ import java.util.Locale
  * Sub-notes are ordinary LogEntry rows with source = "sub_note", linked from
  * a note's text (or a location reminder's note text) by a marker:
  *   🗒[note: Title #<id>]
- * Because they are real notes they get every note feature for free.
  */
 object SubNoteManager {
 
@@ -62,7 +59,7 @@ object SubNoteManager {
     fun idsInItems(items: List<LocationReminderItem>): Set<Long> =
         items.flatMapTo(mutableSetOf()) { idsIn(it.text) }
 
-    /** Every sub-note a note owns: links in its own text plus links inside its location reminders' notes. */
+    /** Every sub-note a row owns: links in its own text plus links inside its location reminders' notes. */
     fun idsInEntry(entry: LogEntry): Set<Long> =
         idsIn(entry.note) + idsInItems(LocationReminderListUtil.fromStored(entry.locationReminders))
 
@@ -101,65 +98,22 @@ object SubNoteManager {
     // ------------------------------------------------------------------ save
 
     /**
-     * Inserts (existing == null) or updates a sub-note and re-arms everything
-     * that belongs to it. Returns the sub-note's id.
+     * Creates (existing == null) or updates a sub-note through the shared saver.
+     * If [existing] was deleted meanwhile (e.g. an empty sub-note being closed),
+     * nothing is re-created. Returns the sub-note's id.
      */
     suspend fun save(context: Context, existing: LogEntry?, result: FullScreenNoteResult): Long =
         withContext(Dispatchers.IO) {
             val dao = AppDatabase.getInstance(context).logEntryDao()
-            val now = System.currentTimeMillis()
-            val timestamp = result.noteDateTimeMillis ?: existing?.timestampMillis ?: now
-            val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(timestamp)
-            val attachmentNames = (result.existingAttachmentNames + result.newAttachments.map { it.name }).distinct()
-            val repeat = result.repeatRule.takeIf { it.isNotBlank() && it != "NONE" }
-
-            val base = existing ?: LogEntry(timestampMillis = timestamp, dateKey = dateKey, source = SOURCE)
-            val updated = base.copy(
-                timestampMillis = timestamp,
-                dateKey = dateKey,
-                title = result.title.ifBlank { null },
-                note = result.text.ifBlank { null },
-                locationUrl = result.locationUrl.ifBlank { null },
-                tags = AttachmentListUtil.toStored(result.tags),
-                attachmentFileName = AttachmentListUtil.toStored(attachmentNames),
-                reminderAtMillis = result.reminderAtMillis,
-                dueAtMillis = result.dueAtMillis,
-                repeatRule = repeat,
-                locationReminders = LocationReminderListUtil.toStored(result.locationReminders),
-                lastModifiedMillis = now
-            )
-
-            val id = if (existing == null) {
-                dao.insert(updated)
-            } else {
-                dao.update(updated)
-                existing.id
-            }
-
-            NoteReminderScheduler.cancelReminder(context, id)
-            NoteReminderScheduler.cancelDue(context, id)
-            NoteReminderScheduler.cancelRepeat(context, id)
-            updated.reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, id, it) }
-            updated.dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, id, it) }
-            if (repeat != null) {
-                RepeatScheduling.firstTrigger(repeat)?.let { NoteReminderScheduler.scheduleRepeat(context, id, it) }
-            }
-
-            // Geofences: drop removed locations, (re)register the rest.
-            val oldItems = LocationReminderListUtil.fromStored(existing?.locationReminders)
-            val newIds = result.locationReminders.map { it.id }.toSet()
-            GeofenceHelper.removeAllGeofencesForEntry(context, id, oldItems.filter { it.id !in newIds })
-            GeofenceHelper.syncGeofencesForEntry(context, id, result.locationReminders)
-
-            dao.getById(id)?.let { CalendarWriter.refreshEntry(context, it) }
-
             if (existing != null) {
-                AttachmentCleanup.deleteIfUnreferenced(
-                    context,
-                    AttachmentCleanup.namesOf(existing) - AttachmentCleanup.namesOf(updated)
-                )
+                val current = dao.getById(existing.id) ?: return@withContext existing.id
+                return@withContext NoteSaver.update(context, current, result).id
             }
-            id
+            val ts = result.noteDateTimeMillis ?: System.currentTimeMillis()
+            val key = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(ts)
+            val id = dao.insert(LogEntry(timestampMillis = ts, dateKey = key, source = SOURCE))
+            val created = dao.getById(id) ?: return@withContext id
+            NoteSaver.update(context, created, result).id
         }
 
     // ---------------------------------------------------------------- delete
@@ -198,7 +152,7 @@ object SubNoteManager {
         if (ids.isNotEmpty()) deleteWithCascade(context, ids)
     }
 
-    /** Deletes every sub-note a note owns, including those inside its location reminders' notes. */
+    /** Deletes every sub-note a row owns, including those inside its location reminders' notes. */
     suspend fun deleteAllInEntry(context: Context, entry: LogEntry) {
         val ids = idsInEntry(entry)
         if (ids.isNotEmpty()) deleteWithCascade(context, ids)
@@ -210,7 +164,7 @@ object SubNoteManager {
         if (removed.isNotEmpty()) deleteWithCascade(context, removed)
     }
 
-    /** Same, comparing the whole old and new note, location reminders included. */
+    /** Same, comparing the whole old and new row, location reminders included. */
     suspend fun deleteRemovedBetween(context: Context, old: LogEntry, new: LogEntry) {
         val removed = idsInEntry(old) - idsInEntry(new)
         if (removed.isNotEmpty()) deleteWithCascade(context, removed)
