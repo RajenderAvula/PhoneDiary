@@ -875,6 +875,8 @@ private fun HomeTabContent() {
 
         Spacer(Modifier.height(8.dp))
         LocationReminderSection(
+           // items = mainLocationReminders,
+            parentPath = listOf("📝 " + noteTitle.trim().ifBlank { "New note" }),
             items = mainLocationReminders,
             onItemsChanged = { mainLocationReminders = it },
             registrationStatus = mainGeofenceStatus,
@@ -1155,8 +1157,11 @@ private fun HomeTabContent() {
                     initialDueAtMillis = null,
                     initialRepeatRule = item.repeatRule,
                     initialNoteDateTimeMillis = null,
+                  //  isLocationNote = true,
+                   // locationNoteName = item.label,
                     isLocationNote = true,
                     locationNoteName = item.label,
+                    parentPath = listOf("📝 " + (parent.title?.trim()?.takeIf { it.isNotEmpty() } ?: "Untitled note")),
                     onAutoSave = { r ->
                         scope.launch {
                             val dao = AppDatabase.getInstance(context).logEntryDao()
