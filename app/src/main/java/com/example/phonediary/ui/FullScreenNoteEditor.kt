@@ -100,6 +100,9 @@ fun FullScreenNoteEditor(
     /** The levels above this note, outermost first. Empty for a main note. */
     parentPath: List<String> = emptyList(),
     highlightQuery: String? = null,
+   // onAutoSave: (FullScreenNoteResult) -> Unit = {},
+    /** When set, a "Delete this note" button appears (sub-notes and location notes). */
+    onDeleteSelf: (() -> Unit)? = null,
     onAutoSave: (FullScreenNoteResult) -> Unit = {},
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
@@ -619,7 +622,14 @@ fun FullScreenNoteEditor(
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
+           // Text("✓ Changes save automatically", style = MaterialTheme.typography.labelSmall)
             Text("✓ Changes save automatically", style = MaterialTheme.typography.labelSmall)
+            if (onDeleteSelf != null) {
+                val what = if (isLocationNote) "location and its note" else "sub-note"
+                TextButton(onClick = {
+                    confirm("Delete this $what with everything inside it? This cannot be undone.") { onDeleteSelf() }
+                }) { Text("🗑 Delete this $what", color = MaterialTheme.colorScheme.error) }
+            }
             Spacer(Modifier.height(4.dp))
 
             OutlinedTextField(
@@ -1147,6 +1157,11 @@ fun FullScreenNoteEditor(
                    // isSubNote = true,
                     isSubNote = true,
                     parentPath = notePath,
+                    //onAutoSave = { r -> scope.launch { SubNoteManager.save(context, e, r) } },
+                    onDeleteSelf = {
+                        subEditor = null
+                        removeSubNoteLinks(setOf(e.id))
+                    },
                     onAutoSave = { r -> scope.launch { SubNoteManager.save(context, e, r) } },
                     onSave = { r ->
                         scope.launch {
