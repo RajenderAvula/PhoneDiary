@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
@@ -34,6 +35,7 @@ import com.example.phonediary.files.LocationOpenHelper
 import com.example.phonediary.files.LocationPinHelper
 import com.example.phonediary.files.MediaResolveUtil
 import com.example.phonediary.files.NotePrintHelper
+import com.example.phonediary.files.NoteSaver
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.SavedAttachment
 import com.example.phonediary.files.StreamingSpeechHelper
@@ -41,9 +43,9 @@ import com.example.phonediary.files.SubNoteManager
 import com.example.phonediary.files.TextScanHelper
 import com.example.phonediary.files.TimeStampManager
 import com.example.phonediary.files.VideoCaptureHelper
-import com.example.phonediary.reminders.GeofenceHelper
 import com.example.phonediary.reminders.GeofenceStatusStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -63,12 +65,17 @@ data class FullScreenNoteResult(
     val locationReminders: List<LocationReminderItem>
 )
 
-/** Which sub-note the nested editor is showing. entry == null means a brand-new, unsaved sub-note. */
-private class SubEditorTarget(val entry: LogEntry?)
+/** Which sub-note the nested editor is showing. */
+private class SubEditorTarget(val entry: LogEntry)
 
 /** The timestamp stamp being edited: its current marker label plus the time/format to start from. */
 private class StampTarget(val oldLabel: String, val millis: Long, val format: String)
 
+/**
+ * Full-screen editor. There is no draft stage: every change is saved through
+ * [onAutoSave] about 0.7 s after you stop changing something, and again when
+ * the editor closes. [onSave] (Done / ✕ Close / Back) just closes it.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullScreenNoteEditor(
@@ -83,21 +90,13 @@ fun FullScreenNoteEditor(
     initialNoteDateTimeMillis: Long?,
     initialLocationReminders: List<LocationReminderItem> = emptyList(),
     existingEntryId: Long? = null,
-    /**
-     * True when this editor is editing the note that belongs to one location
-     * reminder. The location itself is the trigger, so note date/time,
-     * Reminder, Due and nested location reminders are hidden, and Repeat
-     * means "repeat while I'm inside this location". Sub-notes ARE available.
-     */
+    /** Editing the note that belongs to one location reminder (Repeat means "repeat while I'm inside"). */
     isLocationNote: Boolean = false,
     locationNoteName: String = "",
-    /** True when this editor is editing a sub-note (only changes the title bar). */
-  //  isSubNote: Boolean = false,
-  //  highlightQuery: String? = null,
+    /** Editing a sub-note (only changes the title bar). */
     isSubNote: Boolean = false,
-    /** The levels above this note, outermost first. Empty for a main note. */
-    parentPath: List<String> = emptyList(),
     highlightQuery: String? = null,
+    onAutoSave: (FullScreenNoteResult) -> Unit = {},
     onSave: (FullScreenNoteResult) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -118,21 +117,16 @@ fun FullScreenNoteEditor(
     var tags by remember { mutableStateOf(initialTags) }
 
     // The attachment list is the single source of truth: each file appears once.
-    // Notes saved earlier with duplicate names are de-duplicated on open.
     var existingAttachmentNames by remember { mutableStateOf(initialAttachmentNames.distinct()) }
     var newAttachments by remember { mutableStateOf(listOf<SavedAttachment>()) }
 
-    // Attachments that exist only because of an inline link. Deleting the last
-    // link removes them. A file that was also attached separately is not in here,
-    // so deleting its link leaves it attached.
+    // Attachments that exist only because of an inline link.
     var inlineOwned by remember {
         mutableStateOf(
             markerRegex.findAll(initialText).map { it.groupValues[2] }.toSet()
                 .intersect(initialAttachmentNames.toSet())
         )
     }
-    // Files freshly added during this editing session (used to clean up on cancel).
-    val sessionAddedNames = remember { mutableSetOf<String>() }
     var attachmentNotice by remember { mutableStateOf<String?>(null) }
 
     var isRecordingAudio by remember { mutableStateOf(false) }
@@ -147,26 +141,14 @@ fun FullScreenNoteEditor(
     var noteDateTimeMillis by remember { mutableStateOf(initialNoteDateTimeMillis) }
 
     var locationReminders by remember { mutableStateOf(initialLocationReminders) }
-    // Initialised from the persisted store so reopening a note shows real
-    // registration status instead of resetting to "unknown".
-    var geofenceStatus by remember {
-        mutableStateOf(
-            initialLocationReminders.mapNotNull { item ->
-                existingEntryId?.let { id ->
-                    GeofenceStatusStore.getStatus(context, id, item.id)?.let { item.id to it }
-                }
-            }.toMap()
-        )
-    }
-    var geofenceErrors by remember {
-        mutableStateOf(
-            initialLocationReminders.mapNotNull { item ->
-                existingEntryId?.let { id ->
-                    GeofenceStatusStore.getError(context, id, item.id)?.let { item.id to it }
-                }
-            }.toMap()
-        )
-    }
+    fun storedStatus(): Map<String, Boolean> = initialLocationReminders.mapNotNull { item ->
+        existingEntryId?.let { id -> GeofenceStatusStore.getStatus(context, id, item.id)?.let { item.id to it } }
+    }.toMap()
+    fun storedErrors(): Map<String, String> = initialLocationReminders.mapNotNull { item ->
+        existingEntryId?.let { id -> GeofenceStatusStore.getError(context, id, item.id)?.let { item.id to it } }
+    }.toMap()
+    var geofenceStatus by remember { mutableStateOf(storedStatus()) }
+    var geofenceErrors by remember { mutableStateOf(storedErrors()) }
 
     var isOneShotListening by remember { mutableStateOf(false) }
     var isStreamingListening by remember { mutableStateOf(false) }
@@ -175,47 +157,29 @@ fun FullScreenNoteEditor(
 
     var showScribblePad by remember { mutableStateOf(false) }
     var isScanningText by remember { mutableStateOf(false) }
-   // var isViewMode by remember { mutableStateOf(false) }
-   var isViewMode by remember { mutableStateOf(false) }
+    var isViewMode by remember { mutableStateOf(false) }
 
-    // This note's own line in the path bar. It reads `title`, so it updates as you type.
-    val levelLabel = when {
-        isLocationNote -> "📍 " + locationNoteName.ifBlank { "Location" } +
-            (if (title.isNotBlank()) " — ${title.trim()}" else "")
-        isSubNote -> "🗒 " + title.trim().ifBlank { "Untitled sub-note" }
-        else -> "📝 " + title.trim().ifBlank { if (existingEntryId == null) "New note" else "Untitled note" }
-    }
-    val notePath = parentPath + levelLabel
-
-    // ---- Note box scrolling + timestamp stamps ----
     var wrapLines by remember { mutableStateOf(NoteBoxPrefs.wrapLines(context)) }
     var stampEditor by remember { mutableStateOf<StampTarget?>(null) }
 
-    // ---- Sub-notes ----
-    // Every sub-note this note owns: links in its own text, plus (for a normal note)
-    // links inside the notes of its location reminders.
-    val initialSubIds = remember {
-        SubNoteManager.idsIn(initialText) +
-            (if (isLocationNote) emptySet() else SubNoteManager.idsInItems(initialLocationReminders))
-    }
-    fun allSubIds(): Set<Long> =
-        SubNoteManager.idsIn(textFieldValue.text) +
-            (if (isLocationNote) emptySet() else SubNoteManager.idsInItems(locationReminders))
+    // ---- One confirmation dialog for every delete ----
+    var confirmAction by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+    fun confirm(message: String, action: () -> Unit) { confirmAction = message to action }
 
-    // Sub-notes created in this editing session; removed again if this editor is cancelled.
-    val sessionCreatedSubIds = remember { mutableSetOf<Long>() }
+    // ---- Sub-notes ----
+    var knownSubIds by remember { mutableStateOf(SubNoteManager.idsIn(initialText)) }
+    var subGone by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var linkGone by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val freshSubIds = remember { mutableSetOf<Long>() }   // created in this session; removed if left empty
     var subEditor by remember { mutableStateOf<SubEditorTarget?>(null) }
-   // var subNoteNotice by remember { mutableStateOf<String?>(null) }
-   var subNoteNotice by remember { mutableStateOf<String?>(null) }
+    var subNoteNotice by remember { mutableStateOf<String?>(null) }
     var subSelectMode by remember { mutableStateOf(false) }
     var selectedSubIds by remember { mutableStateOf(setOf<Long>()) }
     var confirmSubRemove by remember { mutableStateOf<Set<Long>?>(null) }
-    var confirmSubDelete by remember { mutableStateOf<Set<Long>?>(null) }
     var subNoteRefresh by remember { mutableStateOf(0) }
     var subNoteTitles by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
     val subNoteIds = remember(textFieldValue.text) { SubNoteManager.idsIn(textFieldValue.text).toList() }
 
-    // Live titles for the Sub-notes list; reloads when links change or a sub-note is saved.
     LaunchedEffect(subNoteIds, subNoteRefresh) {
         subNoteTitles = withContext(Dispatchers.IO) {
             val dao = AppDatabase.getInstance(context).logEntryDao()
@@ -237,19 +201,56 @@ fun FullScreenNoteEditor(
         textFieldValue = TextFieldValue(newText, selection = TextRange(cursor + marker.length))
     }
 
+    fun setText(text: String) {
+        textFieldValue = TextFieldValue(text, selection = TextRange(textFieldValue.selection.start.coerceIn(0, text.length)))
+    }
+
+    fun buildResult() = FullScreenNoteResult(
+        title = title, text = textFieldValue.text, locationUrl = locationUrl, tags = tags,
+        existingAttachmentNames = existingAttachmentNames, newAttachments = newAttachments,
+        reminderAtMillis = reminderAtMillis, dueAtMillis = dueAtMillis, repeatRule = repeatRule,
+        noteDateTimeMillis = noteDateTimeMillis, locationReminders = locationReminders
+    )
+
+    // ---- Autosave: no draft stage ----
+    val latestResult by rememberUpdatedState(buildResult())
+    val currentAutoSave by rememberUpdatedState(onAutoSave)
+    var autoReady by remember { mutableStateOf(false) }
+    var dirty by remember { mutableStateOf(false) }
+    LaunchedEffect(
+        title, textFieldValue.text, locationUrl, tags, existingAttachmentNames, newAttachments,
+        reminderAtMillis, dueAtMillis, repeatRule, noteDateTimeMillis, locationReminders
+    ) {
+        if (!autoReady) { autoReady = true; return@LaunchedEffect }
+        dirty = true
+        delay(700)
+        currentAutoSave(buildResult())
+        dirty = false
+        // Show the real registration result once the saver has applied it.
+        if (existingEntryId != null && !isLocationNote) {
+            delay(3000)
+            geofenceStatus = locationReminders.mapNotNull { item ->
+                GeofenceStatusStore.getStatus(context, existingEntryId, item.id)?.let { item.id to it }
+            }.toMap()
+            geofenceErrors = locationReminders.mapNotNull { item ->
+                GeofenceStatusStore.getError(context, existingEntryId, item.id)?.let { item.id to it }
+            }.toMap()
+        }
+    }
+    DisposableEffect(Unit) { onDispose { if (dirty) currentAutoSave(latestResult) } }
+
+    fun finish() { onSave(buildResult()) }
+    if (!isSubNote && !isLocationNote) BackHandler { finish() }
+
+    // ---- Attachments ----
     /**
-     * The only way an attachment is added. marker == null: attached separately
-     * (Attach files / voice / video). marker != null: inserted inline at the cursor.
-     * A file already in the list is never added a second time.
+     * The only way an attachment is added. marker == null: attached separately.
+     * marker != null: inserted inline at the cursor. A file already listed is never added twice.
      */
     fun addAttachment(saved: SavedAttachment, marker: String?) {
         val alreadyListed = saved.name in existingAttachmentNames || newAttachments.any { it.name == saved.name }
-        if (!alreadyListed) {
-            sessionAddedNames += saved.name
-            newAttachments = newAttachments + saved
-        }
+        if (!alreadyListed) newAttachments = newAttachments + saved
         if (marker != null) {
-            // Only a file that exists purely because of an inline link is owned by that link.
             if (!alreadyListed) inlineOwned = inlineOwned + saved.name
             insertAtCursor(marker)
         } else {
@@ -258,7 +259,7 @@ fun FullScreenNoteEditor(
         }
     }
 
-    /** Removes an attachment from the list AND strips its inline links from the text. */
+    /** Removes an attachment from the list AND strips its inline links from the text (call after confirming). */
     fun removeAttachment(name: String) {
         existingAttachmentNames = existingAttachmentNames.filterNot { it == name }
         newAttachments = newAttachments.filterNot { it.name == name }
@@ -266,32 +267,49 @@ fun FullScreenNoteEditor(
         val stripped = markerRegex.replace(textFieldValue.text) {
             if (it.groupValues[2] == name) "" else it.value
         }
-        if (stripped != textFieldValue.text) {
-            val cursor = textFieldValue.selection.start.coerceIn(0, stripped.length)
-            textFieldValue = TextFieldValue(stripped, selection = TextRange(cursor))
-        }
+        if (stripped != textFieldValue.text) setText(stripped)
+        // Added and removed before the first autosave: nothing references the file yet.
+        if (name !in initialAttachmentNames) AttachmentCleanup.launchDeleteIfUnreferenced(context, listOf(name))
     }
 
-    // Deleting the last inline link of an inline-owned attachment removes that attachment too.
+    // Deleting an inline file link by typing: ask whether to remove the file too.
     LaunchedEffect(textFieldValue.text) {
         val present = markerRegex.findAll(textFieldValue.text).map { it.groupValues[2] }.toSet()
         val gone = inlineOwned.filter { it !in present }.toSet()
-        if (gone.isNotEmpty()) {
-            existingAttachmentNames = existingAttachmentNames.filterNot { it in gone }
-            newAttachments = newAttachments.filterNot { it.name in gone }
-            inlineOwned = inlineOwned - gone
-            attachmentNotice = "Removed ${gone.joinToString(", ")} — its link was deleted from the note"
-        }
+        if (gone.isNotEmpty() && linkGone.isEmpty()) linkGone = gone
     }
 
+    // Deleting a sub-note link by typing: ask whether to delete the sub-note.
+    LaunchedEffect(textFieldValue.text) {
+        val now = SubNoteManager.idsIn(textFieldValue.text)
+        val gone = knownSubIds - now
+        knownSubIds = now
+        if (gone.isNotEmpty() && subGone.isEmpty()) subGone = gone
+    }
+
+    // ---- Sub-note actions ----
     fun openSubNote(id: Long?) {
         subNoteNotice = null
-        if (id == null) {
-            subEditor = SubEditorTarget(null)
-            return
-        }
         scope.launch {
-            val entry = withContext(Dispatchers.IO) { AppDatabase.getInstance(context).logEntryDao().getById(id) }
+            val dao = AppDatabase.getInstance(context).logEntryDao()
+            val entry: LogEntry? = if (id == null) {
+                // Created right away: there is no unsaved sub-note.
+                val newId = SubNoteManager.save(
+                    context, null,
+                    FullScreenNoteResult(
+                        title = "", text = "", locationUrl = "", tags = emptyList(),
+                        existingAttachmentNames = emptyList(), newAttachments = emptyList(),
+                        reminderAtMillis = null, dueAtMillis = null, repeatRule = "NONE",
+                        noteDateTimeMillis = null, locationReminders = emptyList()
+                    )
+                )
+                freshSubIds += newId
+                knownSubIds = knownSubIds + newId
+                insertAtCursor(SubNoteManager.marker(newId, "Sub-note"))
+                withContext(Dispatchers.IO) { dao.getById(newId) }
+            } else {
+                withContext(Dispatchers.IO) { dao.getById(id) }
+            }
             if (entry == null || entry.source != SubNoteManager.SOURCE) {
                 subNoteNotice = "That sub-note no longer exists"
             } else {
@@ -300,78 +318,42 @@ fun FullScreenNoteEditor(
         }
     }
 
-    /** Removes a sub-note's link from the text. The sub-note itself is deleted when the parent note is saved. */
-    fun removeSubNoteLink(id: Long) {
-        val stripped = markerRegex.replace(textFieldValue.text) { m ->
-            if (m.groupValues[1] == SubNoteManager.TYPE && SubNoteManager.parseId(m.groupValues[2]) == id) "" else m.value
-        }
-        if (stripped != textFieldValue.text) {
-            val cursor = textFieldValue.selection.start.coerceIn(0, stripped.length)
-            textFieldValue = TextFieldValue(stripped, selection = TextRange(cursor))
+    /** Closes the sub-note editor: drops a sub-note left empty, otherwise refreshes its link label. */
+    fun closeSubEditor(id: Long) {
+        subEditor = null
+        scope.launch {
+            val dao = AppDatabase.getInstance(context).logEntryDao()
+            if (id in freshSubIds && NoteSaver.deleteIfEmpty(context, id)) {
+                freshSubIds -= id
+                knownSubIds = knownSubIds - id
+                setText(markerRegex.replace(textFieldValue.text) { m ->
+                    if (m.groupValues[1] == SubNoteManager.TYPE && SubNoteManager.parseId(m.groupValues[2]) == id) "" else m.value
+                })
+            } else {
+                val e = withContext(Dispatchers.IO) { dao.getById(id) }
+                if (e != null) {
+                    val label = e.title?.takeIf { it.isNotBlank() }
+                        ?: markerRegex.replace(e.note.orEmpty(), "").trim().ifBlank { "Sub-note" }
+                    setText(markerRegex.replace(textFieldValue.text) { m ->
+                        if (m.groupValues[1] == SubNoteManager.TYPE && SubNoteManager.parseId(m.groupValues[2]) == id)
+                            SubNoteManager.marker(id, label) else m.value
+                    })
+                }
+            }
+            subNoteRefresh++
         }
     }
-    /** Removes the links of several sub-notes at once. They are deleted when this note is saved. */
+
+    /** Removes the links of sub-notes and deletes them (call after confirming). */
     fun removeSubNoteLinks(ids: Set<Long>) {
-        val stripped = markerRegex.replace(textFieldValue.text) { m ->
+        knownSubIds = knownSubIds - ids
+        setText(markerRegex.replace(textFieldValue.text) { m ->
             val id = if (m.groupValues[1] == SubNoteManager.TYPE) SubNoteManager.parseId(m.groupValues[2]) else null
             if (id != null && id in ids) "" else m.value
-        }
-        if (stripped != textFieldValue.text) {
-            val cursor = textFieldValue.selection.start.coerceIn(0, stripped.length)
-            textFieldValue = TextFieldValue(stripped, selection = TextRange(cursor))
-        }
+        })
+        SubNoteManager.launchDeleteWithCascade(context, ids)
         selectedSubIds = emptySet()
         subSelectMode = false
-    }
-
-    fun cancelAndCleanup() {
-        val initialNames = initialAttachmentNames.toSet()
-        val initialLocationNames = initialLocationReminders.flatMap { it.attachmentNames }.toSet()
-        val newLocationNames = locationReminders.flatMap { it.attachmentNames }.toSet() - initialLocationNames
-        AttachmentCleanup.launchDeleteIfUnreferenced(
-            context,
-            (sessionAddedNames - initialNames) + newLocationNames
-        )
-        // Sub-notes created in this session were saved to the database already — remove them.
-        // For a normal note that includes ones created inside its location reminders' notes.
-        SubNoteManager.launchDeleteWithCascade(
-            context,
-            sessionCreatedSubIds.toSet() + (allSubIds() - initialSubIds)
-        )
-        onCancel()
-    }
-
-    fun performSave(removedSubIds: Set<Long>) {
-        val finalSubIds = allSubIds()
-        // A location note leaves removed sub-notes alone: it lives inside its parent
-        // note, which isn't saved yet. The parent deletes them when it is saved.
-        SubNoteManager.launchDeleteWithCascade(
-            context,
-            (if (isLocationNote) emptySet() else removedSubIds) + (sessionCreatedSubIds - finalSubIds)
-        )
-        // Files added this session but removed before saving are never referenced
-        // by anything — delete them now. (The check against other notes happens
-        // inside, so shared files are safe.)
-        val finalNames = (existingAttachmentNames + newAttachments.map { it.name }).toSet()
-        AttachmentCleanup.launchDeleteIfUnreferenced(
-            context,
-            sessionAddedNames - finalNames - initialAttachmentNames.toSet()
-        )
-        onSave(
-            FullScreenNoteResult(
-                title = title,
-                text = textFieldValue.text,
-                locationUrl = locationUrl,
-                tags = tags,
-                existingAttachmentNames = existingAttachmentNames,
-                newAttachments = newAttachments,
-                reminderAtMillis = reminderAtMillis,
-                dueAtMillis = dueAtMillis,
-                repeatRule = repeatRule,
-                noteDateTimeMillis = noteDateTimeMillis,
-                locationReminders = locationReminders
-            )
-        )
     }
 
     fun openMarkerAttachment(name: String) {
@@ -406,6 +388,7 @@ fun FullScreenNoteEditor(
         }
     }
 
+    // ---- Voice, scan, pickers ----
     fun startOneShotSpeech() {
         if (isOneShotListening) {
             streamingSpeechHelper.forceStop { listening -> isOneShotListening = listening }
@@ -570,7 +553,7 @@ fun FullScreenNoteEditor(
                     )
                 },
                 navigationIcon = {
-                    TextButton(onClick = { cancelAndCleanup() }) { Text("✕ Cancel") }
+                    TextButton(onClick = { finish() }) { Text("✕ Close") }
                 },
                 actions = {
                     TextButton(onClick = {
@@ -600,33 +583,21 @@ fun FullScreenNoteEditor(
                             attachmentNames = existingAttachmentNames + newAttachments.map { it.name }
                         )
                     }) { Text("🖨") }
-                    TextButton(onClick = {
-                        // Sub-notes whose links were deleted are removed on save, after confirming.
-                        // A location note skips this: its parent note deletes them when it is saved.
-                        val removed = initialSubIds - allSubIds()
-                        if (removed.isNotEmpty() && !isLocationNote) confirmSubDelete = removed else performSave(emptySet())
-                    }) { Text("Save") }
+                    TextButton(onClick = { finish() }) { Text("Done") }
                 }
             )
         }
-  /*  ) { padding ->
+    ) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
                 .padding(16.dp)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-        ) {*/
-        ) { padding ->
-      Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-        NoteHierarchyBar(notePath)
-        Column(
-            modifier = Modifier
-                .padding(16.dp)
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
         ) {
+            Text("✓ Changes save automatically", style = MaterialTheme.typography.labelSmall)
+            Spacer(Modifier.height(4.dp))
+
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
@@ -735,7 +706,6 @@ fun FullScreenNoteEditor(
                     IconButton(onClick = { insertImageLauncher.launch("image/*") }) { Text("🖼") }
                     IconButton(onClick = { attachFileLauncher.launch(arrayOf("*/*")) }) { Text("🔗") }
                     IconButton(onClick = { showScribblePad = true }) { Text("✍") }
-                    // Inserts the current date & time at the cursor; tap the stamp to edit it.
                     IconButton(onClick = {
                         insertAtCursor(
                             TimeStampManager.marker(System.currentTimeMillis(), TimeStampManager.lastFormat(context))
@@ -756,16 +726,13 @@ fun FullScreenNoteEditor(
                 Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
 
-            // ---- Sub-notes (normal notes and location reminder notes) ----
+            // ---- Sub-notes ----
             Spacer(Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                /*Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
-                OutlinedButton(onClick = { openSubNote(null) }) { Text("+ Sub-note") }
-            }*/
                 Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (subNoteIds.size > 1) {
@@ -797,13 +764,7 @@ fun FullScreenNoteEditor(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            /*subNoteIds.forEach { id ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = { openSubNote(id) }
-                    ) {*/
-                    subNoteIds.forEach { id ->
+            subNoteIds.forEach { id ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (subSelectMode) {
                         Checkbox(
@@ -815,9 +776,13 @@ fun FullScreenNoteEditor(
                     }
                     TextButton(
                         modifier = Modifier.weight(1f),
-                        onClick = { if (subSelectMode) {
-                            selectedSubIds = if (id in selectedSubIds) selectedSubIds - id else selectedSubIds + id
-                        } else openSubNote(id) }
+                        onClick = {
+                            if (subSelectMode) {
+                                selectedSubIds = if (id in selectedSubIds) selectedSubIds - id else selectedSubIds + id
+                            } else {
+                                openSubNote(id)
+                            }
+                        }
                     ) {
                         Text(
                             "🗒 ${subNoteTitles[id] ?: "…"}",
@@ -825,10 +790,13 @@ fun FullScreenNoteEditor(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                   // TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
-                   if (!subSelectMode) {
-                        TextButton(onClick = { removeSubNoteLink(id) }) { Text("✕") }
-                   }
+                    if (!subSelectMode) {
+                        TextButton(onClick = {
+                            confirm("Delete this sub-note with its attachments and reminders?") {
+                                removeSubNoteLinks(setOf(id))
+                            }
+                        }) { Text("✕") }
+                    }
                 }
             }
             subNoteNotice?.let {
@@ -857,7 +825,7 @@ fun FullScreenNoteEditor(
                 Row(modifier = Modifier.fillMaxWidth()) {
                     tags.forEach { tag ->
                         AssistChip(
-                            onClick = { tags = tags.filterNot { it == tag } },
+                            onClick = { confirm("Remove the tag #$tag?") { tags = tags.filterNot { it == tag } } },
                             label = { Text("#$tag ✕") },
                             modifier = Modifier.padding(end = 6.dp)
                         )
@@ -891,7 +859,9 @@ fun FullScreenNoteEditor(
                     }
                     if (reminderAtMillis != null) {
                         Spacer(Modifier.width(4.dp))
-                        OutlinedButton(onClick = { reminderAtMillis = null }) { Text("✕") }
+                        OutlinedButton(onClick = {
+                            confirm("Remove this reminder?") { reminderAtMillis = null }
+                        }) { Text("✕") }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
@@ -904,7 +874,9 @@ fun FullScreenNoteEditor(
                     }
                     if (dueAtMillis != null) {
                         Spacer(Modifier.width(4.dp))
-                        OutlinedButton(onClick = { dueAtMillis = null }) { Text("✕") }
+                        OutlinedButton(onClick = {
+                            confirm("Remove the due date?") { dueAtMillis = null }
+                        }) { Text("✕") }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
@@ -918,12 +890,14 @@ fun FullScreenNoteEditor(
                 }
                 if (repeatRule != "NONE") {
                     Spacer(Modifier.width(4.dp))
-                    OutlinedButton(onClick = { repeatRule = "NONE" }) { Text("✕") }
+                    OutlinedButton(onClick = {
+                        confirm("Remove the repeat?") { repeatRule = "NONE" }
+                    }) { Text("✕") }
                 }
             }
             if (isLocationNote) {
                 Text(
-                    "Notifies again on this schedule while you stay inside this location's area. Stops when you leave. Takes effect when the parent note is saved.",
+                    "Notifies again on this schedule while you stay inside this location's area. Stops when you leave.",
                     style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -940,31 +914,12 @@ fun FullScreenNoteEditor(
                 LocationReminderSection(
                     items = locationReminders,
                     onItemsChanged = { locationReminders = it },
-                  //  registrationStatus = geofenceStatus,
-                    parentPath = notePath,
                     registrationStatus = geofenceStatus,
                     registrationError = geofenceErrors,
                     onToggle = { item ->
-                        if (existingEntryId != null) {
-                            if (item.enabled) {
-                                GeofenceHelper.registerGeofence(context, existingEntryId, item) { success, error ->
-                                    geofenceStatus = geofenceStatus + (item.id to success)
-                                    geofenceErrors = if (error != null) {
-                                        geofenceErrors + (item.id to error)
-                                    } else {
-                                        geofenceErrors - item.id
-                                    }
-                                }
-                            } else {
-                                GeofenceHelper.removeGeofence(context, existingEntryId, item.id)
-                                geofenceStatus = geofenceStatus - item.id
-                                geofenceErrors = geofenceErrors - item.id
-                            }
-                        } else {
-                            // New note: no id yet, so nothing to register until Save.
-                            geofenceStatus = geofenceStatus - item.id
-                            geofenceErrors = geofenceErrors - item.id
-                        }
+                        // The autosave registers or removes the geofence; just clear the stale status.
+                        geofenceStatus = geofenceStatus - item.id
+                        geofenceErrors = geofenceErrors - item.id
                     }
                 )
             }
@@ -983,7 +938,11 @@ fun FullScreenNoteEditor(
                 }
                 ResolvingAttachmentPreview(
                     name = name,
-                    onRemove = { removeAttachment(name) }
+                    onRemove = {
+                        confirm("Remove this attachment? Its file is deleted from your phone if no other note uses it.") {
+                            removeAttachment(name)
+                        }
+                    }
                 )
             }
             newAttachments.forEach { attachment ->
@@ -993,7 +952,11 @@ fun FullScreenNoteEditor(
                 AttachmentPreview(
                     name = attachment.name,
                     uri = attachment.uri,
-                    onRemove = { removeAttachment(attachment.name) }
+                    onRemove = {
+                        confirm("Remove this attachment? Its file is deleted from your phone if no other note uses it.") {
+                            removeAttachment(attachment.name)
+                        }
+                    }
                 )
             }
             attachmentNotice?.let {
@@ -1010,7 +973,6 @@ fun FullScreenNoteEditor(
             }
         }
     }
-}
 
     if (showScribblePad) {
         InlineScribblePad(
@@ -1034,51 +996,94 @@ fun FullScreenNoteEditor(
                     textFieldValue.text, target.oldLabel, TimeStampManager.marker(millis, format, key)
                 )
                 if (applyToAll) text = TimeStampManager.restyleAll(text, format)
-                val cursor = textFieldValue.selection.start.coerceIn(0, text.length)
-                textFieldValue = TextFieldValue(text, selection = TextRange(cursor))
+                setText(text)
                 TimeStampManager.saveLastFormat(context, format)
                 stampEditor = null
             },
             onDelete = {
-                val text = TimeStampManager.replaceStamp(textFieldValue.text, target.oldLabel, "")
-                val cursor = textFieldValue.selection.start.coerceIn(0, text.length)
-                textFieldValue = TextFieldValue(text, selection = TextRange(cursor))
+                val label = target.oldLabel
                 stampEditor = null
+                confirm("Delete this timestamp?") {
+                    setText(TimeStampManager.replaceStamp(textFieldValue.text, label, ""))
+                }
             },
             onDismiss = { stampEditor = null }
         )
     }
 
-    // ---- Confirm before deleting sub-notes whose links were removed ----
-    confirmSubDelete?.let { ids ->
+    // ---- Generic delete confirmation ----
+    confirmAction?.let { (message, action) ->
         ConfirmDeleteDialog(
-            message = "${ids.size} sub-note(s) will be permanently deleted, with their attachments and reminders, " +
-                "because their links were removed from this note. Continue?",
-            onConfirm = {
-                confirmSubDelete = null
-                performSave(ids)
-            },
-            onDismiss = { confirmSubDelete = null }
+            message = message,
+            onConfirm = { confirmAction = null; action() },
+            onDismiss = { confirmAction = null }
         )
     }
+
+    // ---- Delete several sub-notes at once ----
     confirmSubRemove?.let { ids ->
         ConfirmDeleteDialog(
-            message = "Remove ${ids.size} sub-note(s) from this note? They are permanently deleted, with their " +
-                "attachments and reminders, when you Save. Cancel the note to undo.",
-            onConfirm = {
-                confirmSubRemove = null
-                removeSubNoteLinks(ids)
-            },
+            message = "Delete ${ids.size} sub-note(s) now, with their attachments and reminders? This cannot be undone.",
+            onConfirm = { confirmSubRemove = null; removeSubNoteLinks(ids) },
             onDismiss = { confirmSubRemove = null }
         )
     }
 
-    // ---- Nested editor for one sub-note. Its own Dialog window, so its Scaffold
-    //      never sits inside this editor's scrolling column. ----
+    // ---- A file link was deleted from the text ----
+    if (linkGone.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { inlineOwned = inlineOwned - linkGone; linkGone = emptySet() },
+            title = { Text("Link removed from the note") },
+            text = {
+                Text("Also remove ${linkGone.joinToString(", ")} from the attachments? The file is deleted if no other note uses it.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val names = linkGone
+                    existingAttachmentNames = existingAttachmentNames.filterNot { it in names }
+                    newAttachments = newAttachments.filterNot { it.name in names }
+                    inlineOwned = inlineOwned - names
+                    linkGone = emptySet()
+                    names.filter { it !in initialAttachmentNames }.let {
+                        AttachmentCleanup.launchDeleteIfUnreferenced(context, it)
+                    }
+                }) { Text("Remove file") }
+            },
+            dismissButton = {
+                TextButton(onClick = { inlineOwned = inlineOwned - linkGone; linkGone = emptySet() }) { Text("Keep attached") }
+            }
+        )
+    }
+
+    // ---- A sub-note link was deleted from the text ----
+    if (subGone.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { subGone = emptySet() },
+            title = { Text("Sub-note link removed") },
+            text = { Text("Delete ${subGone.size} sub-note(s) with their attachments and reminders?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    SubNoteManager.launchDeleteWithCascade(context, subGone)
+                    subGone = emptySet()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    val restore = subGone
+                    subGone = emptySet()
+                    restore.forEach { id ->
+                        insertAtCursor(SubNoteManager.marker(id, subNoteTitles[id] ?: "Sub-note"))
+                    }
+                }) { Text("Keep (restore link)") }
+            }
+        )
+    }
+
+    // ---- Nested editor for one sub-note, in its own Dialog window ----
     subEditor?.let { target ->
         val e = target.entry
         Dialog(
-            onDismissRequest = { subEditor = null },
+            onDismissRequest = { closeSubEditor(e.id) },
             properties = DialogProperties(
                 usePlatformDefaultWidth = false,
                 dismissOnBackPress = true,
@@ -1087,34 +1092,26 @@ fun FullScreenNoteEditor(
         ) {
             Surface(modifier = Modifier.fillMaxSize()) {
                 FullScreenNoteEditor(
-                    initialTitle = e?.title ?: "",
-                    initialText = e?.note ?: "",
-                    initialLocationUrl = e?.locationUrl ?: "",
-                    initialTags = AttachmentListUtil.toList(e?.tags),
-                    initialAttachmentNames = AttachmentListUtil.toList(e?.attachmentFileName).distinct(),
-                    initialReminderAtMillis = e?.reminderAtMillis,
-                    initialDueAtMillis = e?.dueAtMillis,
-                    initialRepeatRule = e?.repeatRule ?: "NONE",
-                    initialNoteDateTimeMillis = e?.timestampMillis ?: noteDateTimeMillis,
-                    initialLocationReminders = LocationReminderListUtil.fromStored(e?.locationReminders),
-                    existingEntryId = e?.id,
-                   // isSubNote = true,
+                    initialTitle = e.title ?: "",
+                    initialText = e.note ?: "",
+                    initialLocationUrl = e.locationUrl ?: "",
+                    initialTags = AttachmentListUtil.toList(e.tags),
+                    initialAttachmentNames = AttachmentListUtil.toList(e.attachmentFileName).distinct(),
+                    initialReminderAtMillis = e.reminderAtMillis,
+                    initialDueAtMillis = e.dueAtMillis,
+                    initialRepeatRule = e.repeatRule ?: "NONE",
+                    initialNoteDateTimeMillis = e.timestampMillis,
+                    initialLocationReminders = LocationReminderListUtil.fromStored(e.locationReminders),
+                    existingEntryId = e.id,
                     isSubNote = true,
-                    parentPath = notePath,
+                    onAutoSave = { r -> scope.launch { SubNoteManager.save(context, e, r) } },
                     onSave = { r ->
-                        val wasNew = e == null
                         scope.launch {
-                            val id = SubNoteManager.save(context, e, r)
-                            if (wasNew) {
-                                sessionCreatedSubIds += id
-                                val label = r.title.ifBlank { markerRegex.replace(r.text, "").trim() }
-                                insertAtCursor(SubNoteManager.marker(id, label))
-                            }
-                            subNoteRefresh++
-                            subEditor = null
+                            SubNoteManager.save(context, e, r)
+                            closeSubEditor(e.id)
                         }
                     },
-                    onCancel = { subEditor = null }
+                    onCancel = { closeSubEditor(e.id) }
                 )
             }
         }
