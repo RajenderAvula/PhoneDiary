@@ -48,6 +48,8 @@ private fun moveDown(list: List<LocationReminderItem>, selected: Set<String>): L
 fun LocationReminderSection(
     items: List<LocationReminderItem>,
     onItemsChanged: (List<LocationReminderItem>) -> Unit,
+   // registrationStatus: Map<String, Boolean> = emptyMap(),
+    parentPath: List<String> = emptyList(),
     registrationStatus: Map<String, Boolean> = emptyMap(),
     registrationError: Map<String, String> = emptyMap(),
     onToggle: ((LocationReminderItem) -> Unit)? = null
@@ -284,7 +286,9 @@ fun LocationReminderSection(
                         initialDueAtMillis = null,
                         initialRepeatRule = item.repeatRule,
                         initialNoteDateTimeMillis = null,
+                       // isLocationNote = true,
                         isLocationNote = true,
+                        parentPath = parentPath,
                         locationNoteName = item.label,
                         onAutoSave = { result -> applyNote(item.id, result) },
                         onSave = { result ->
