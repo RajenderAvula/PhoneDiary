@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -38,31 +39,33 @@ private fun moveDown(list: List<LocationReminderItem>, selected: Set<String>): L
 }
 
 /**
- * The list of location reminders for a note. Each one has its own on/off
- * switch, repeat schedule, note editor, and pin; items can be reordered one
- * at a time (▲▼) or several at once (Select & move). Used identically in the
- * main composer, the inline editor, and the full-screen editor.
+ * The list of location reminders for a note. Each has its own on/off switch,
+ * repeat, note editor (autosaved) and pin; items can be reordered one at a
+ * time (▲▼) or several at once (Select & move). Every removal asks first.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LocationReminderSection(
     items: List<LocationReminderItem>,
     onItemsChanged: (List<LocationReminderItem>) -> Unit,
-    //registrationStatus: Map<String, Boolean> = emptyMap(),
-    parentPath: List<String> = emptyList(),
     registrationStatus: Map<String, Boolean> = emptyMap(),
     registrationError: Map<String, String> = emptyMap(),
     onToggle: ((LocationReminderItem) -> Unit)? = null
 ) {
+    val context = LocalContext.current
     val settingsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { }
+
+    // Always the newest list, so autosave callbacks from the note editor never use a stale one.
+    val latestItems by rememberUpdatedState(items)
 
     var showPicker by remember { mutableStateOf(false) }
     var editingPinItem by remember { mutableStateOf<LocationReminderItem?>(null) }
     var repeatEditingItem by remember { mutableStateOf<LocationReminderItem?>(null) }
     var noteEditingItem by remember { mutableStateOf<LocationReminderItem?>(null) }
     var confirmRemoveItem by remember { mutableStateOf<LocationReminderItem?>(null) }
+    var confirmNoRepeat by remember { mutableStateOf<LocationReminderItem?>(null) }
 
     var reorderMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
@@ -71,7 +74,20 @@ fun LocationReminderSection(
     val activeSelected = selectedIds.filter { id -> items.any { it.id == id } }.toSet()
 
     fun updateItem(updated: LocationReminderItem) {
-        onItemsChanged(items.map { if (it.id == updated.id) updated else it })
+        onItemsChanged(latestItems.map { if (it.id == updated.id) updated else it })
+    }
+
+    fun applyNote(id: String, r: FullScreenNoteResult) {
+        val current = latestItems.firstOrNull { it.id == id } ?: return
+        val updated = current.copy(
+            title = r.title.trim(),
+            text = r.text,
+            locationUrl = r.locationUrl.trim(),
+            tags = r.tags,
+            attachmentNames = (r.existingAttachmentNames + r.newAttachments.map { it.name }).distinct(),
+            repeatRule = r.repeatRule
+        )
+        if (updated != current) updateItem(updated)
     }
 
     Row(
@@ -150,10 +166,7 @@ fun LocationReminderSection(
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
-
-                  //  if (item.enabled) {
-                        //when (registrationStatus[item.id]) {
-                        val subNoteCount = SubNoteManager.idsIn(item.text).size
+                    val subNoteCount = SubNoteManager.idsIn(item.text).size
                     if (subNoteCount > 0) {
                         Text("🗒 $subNoteCount sub-note(s)", style = MaterialTheme.typography.labelSmall)
                     }
@@ -179,7 +192,7 @@ fun LocationReminderSection(
                                 }
                             }
                             null -> Text(
-                                "Will register when you Save",
+                                "Registers automatically after saving",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -201,7 +214,7 @@ fun LocationReminderSection(
                     Text(if (item.hasRepeat()) "🔁 Change repeat" else "🔁 Add repeat")
                 }
                 if (item.hasRepeat()) {
-                    TextButton(onClick = { updateItem(item.copy(repeatRule = "NONE")) }) { Text("No repeat") }
+                    TextButton(onClick = { confirmNoRepeat = item }) { Text("No repeat") }
                 }
                 TextButton(onClick = { noteEditingItem = item }) {
                     Text(if (item.hasNote()) "📝 Edit note •" else "📝 Note")
@@ -222,9 +235,10 @@ fun LocationReminderSection(
         MapLocationPickerDialog(
             initial = editingPinItem,
             onConfirm = { newItem ->
+                val list = latestItems
                 onItemsChanged(
-                    if (editingPinItem != null) items.map { if (it.id == newItem.id) newItem else it }
-                    else items + newItem
+                    if (editingPinItem != null) list.map { if (it.id == newItem.id) newItem else it }
+                    else list + newItem
                 )
                 showPicker = false
                 editingPinItem = null
@@ -241,15 +255,14 @@ fun LocationReminderSection(
         RepeatPickerDialog(
             initial = RepeatConfig.fromStored(item.repeatRule),
             onConfirm = { config ->
-                updateItem(item.copy(repeatRule = config.toStored()))
+                latestItems.firstOrNull { it.id == item.id }?.let { updateItem(it.copy(repeatRule = config.toStored())) }
                 repeatEditingItem = null
             },
             onDismiss = { repeatEditingItem = null }
         )
     }
 
-    // ---- Per-location full note editor (its own Dialog window, so the
-    //      editor's Scaffold never sits inside the parent's scrolling column) ----
+    // ---- Per-location full note editor (own Dialog window; changes are autosaved) ----
     noteEditingItem?.let { item ->
         Dialog(
             onDismissRequest = { noteEditingItem = null },
@@ -271,21 +284,11 @@ fun LocationReminderSection(
                         initialDueAtMillis = null,
                         initialRepeatRule = item.repeatRule,
                         initialNoteDateTimeMillis = null,
-                       // isLocationNote = true,
                         isLocationNote = true,
-                        parentPath = parentPath,
                         locationNoteName = item.label,
+                        onAutoSave = { result -> applyNote(item.id, result) },
                         onSave = { result ->
-                            updateItem(
-                                item.copy(
-                                    title = result.title.trim(),
-                                    text = result.text,
-                                    locationUrl = result.locationUrl.trim(),
-                                    tags = result.tags,
-                                    attachmentNames = result.existingAttachmentNames + result.newAttachments.map { it.name },
-                                    repeatRule = result.repeatRule
-                                )
-                            )
+                            applyNote(item.id, result)
                             noteEditingItem = null
                         },
                         onCancel = { noteEditingItem = null }
@@ -295,16 +298,28 @@ fun LocationReminderSection(
         }
     }
 
-    // ---- Confirm before removing (a location can now hold a note) ----
-    confirmRemoveItem?.let { item ->
+    // ---- Confirm before clearing a repeat ----
+    confirmNoRepeat?.let { item ->
         ConfirmDeleteDialog(
-           // message = "Remove \"${item.label}\" and its note? This cannot be undone.",
-            message = "Remove \"${item.label}\" and its note" +
-                SubNoteManager.idsIn(item.text).size.let {
-                    if (it > 0) ", including $it sub-note(s) (deleted when you save)" else ""
-                } + "? This cannot be undone.",
+            message = "Remove the repeat from \"${item.label}\"?",
             onConfirm = {
-                onItemsChanged(items.filterNot { it.id == item.id })
+                latestItems.firstOrNull { it.id == item.id }?.let { updateItem(it.copy(repeatRule = "NONE")) }
+                confirmNoRepeat = null
+            },
+            onDismiss = { confirmNoRepeat = null }
+        )
+    }
+
+    // ---- Confirm before removing a location (it can hold a note and sub-notes) ----
+    confirmRemoveItem?.let { item ->
+        val subIds = SubNoteManager.idsIn(item.text)
+        ConfirmDeleteDialog(
+            message = "Remove \"${item.label}\" and its note" +
+                (if (subIds.isNotEmpty()) ", including ${subIds.size} sub-note(s)" else "") +
+                "? This cannot be undone.",
+            onConfirm = {
+                SubNoteManager.launchDeleteWithCascade(context, subIds)
+                onItemsChanged(latestItems.filterNot { it.id == item.id })
                 confirmRemoveItem = null
             },
             onDismiss = { confirmRemoveItem = null }
