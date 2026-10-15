@@ -1203,7 +1203,9 @@ private fun HomeTabContent() {
 
     confirmDeleteEntry?.let { entry ->
         ConfirmDeleteDialog(
-            message = "Delete this entry, including its sub-notes, attachments and reminders? This cannot be undone.",
+            //message = "Delete this entry, including its sub-notes, attachments and reminders? This cannot be undone.",
+            message = "Delete this entry and its ${SubNoteManager.idsInEntry(entry).size} sub-note(s) " +
+                "(plus any inside nested sub-notes), with all attachments and reminders? This cannot be undone.",
             onConfirm = {
                 selectedDate?.let { performDeleteEntry(entry, it) }
                 confirmDeleteEntry = null
