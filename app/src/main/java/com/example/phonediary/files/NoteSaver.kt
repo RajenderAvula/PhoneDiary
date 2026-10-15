@@ -81,7 +81,7 @@ object NoteSaver {
             AttachmentCleanup.deleteIfUnreferenced(
                 context, AttachmentCleanup.namesOf(old) - AttachmentCleanup.namesOf(updated)
             )
-            SubNoteManager.deleteRemovedBetween(context, old, updated)
+           // SubNoteManager.deleteRemovedBetween(context, old, updated)
             updated
         }
 
