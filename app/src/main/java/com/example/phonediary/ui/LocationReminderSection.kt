@@ -290,6 +290,12 @@ fun LocationReminderSection(
                         isLocationNote = true,
                         parentPath = parentPath,
                         locationNoteName = item.label,
+                       // onAutoSave = { result -> applyNote(item.id, result) },
+                        onDeleteSelf = {
+                            SubNoteManager.launchDeleteWithCascade(context, SubNoteManager.idsIn(item.text))
+                            onItemsChanged(latestItems.filterNot { it.id == item.id })
+                            noteEditingItem = null
+                        },
                         onAutoSave = { result -> applyNote(item.id, result) },
                         onSave = { result ->
                             applyNote(item.id, result)
