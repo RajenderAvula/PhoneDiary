@@ -154,14 +154,14 @@ object NoteTree {
         return result
     }
 }
-
 @Composable
 fun NoteTreeView(
     entry: LogEntry,
     refreshKey: Int,
     collapsed: Set<String>,
     onToggleBranch: (String) -> Unit,
-    onOpen: (NoteNode) -> Unit
+    onOpen: (NoteNode) -> Unit,
+    onDelete: (NoteNode) -> Unit = {}
 ) {
     val context = LocalContext.current
     var nodes by remember(entry.id) { mutableStateOf<List<NoteNode>?>(null) }
@@ -185,7 +185,7 @@ fun NoteTreeView(
         if (list != null && list.isEmpty()) {
             Text("Nothing inside.", style = MaterialTheme.typography.bodySmall)
         }
-        list?.forEach { NodeItem(it, 0, collapsed, onToggleBranch, onOpen) }
+        list?.forEach { NodeItem(it, 0, collapsed, onToggleBranch, onOpen, onDelete) }
     }
 }
 
@@ -195,7 +195,8 @@ private fun NodeItem(
     depth: Int,
     collapsed: Set<String>,
     onToggle: (String) -> Unit,
-    onOpen: (NoteNode) -> Unit
+    onOpen: (NoteNode) -> Unit,
+    onDelete: (NoteNode) -> Unit
 ) {
     val isCollapsed = node.key in collapsed
     Row(
@@ -218,8 +219,15 @@ private fun NodeItem(
                 textAlign = TextAlign.Start
             )
         }
+        if (node.kind != NodeKind.INFO) {
+            TextButton(
+                onClick = { onDelete(node) },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) { Text("🗑") }
+        }
     }
     if (!isCollapsed) {
-        node.children.forEach { NodeItem(it, depth + 1, collapsed, onToggle, onOpen) }
+        node.children.forEach { NodeItem(it, depth + 1, collapsed, onToggle, onOpen, onDelete) }
     }
 }
+
