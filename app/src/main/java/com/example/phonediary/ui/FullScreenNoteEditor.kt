@@ -759,6 +759,14 @@ fun FullScreenNoteEditor(
             ) {
                 Text("Sub-notes", style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                   // if (subNoteIds.size > 1) {
+                    if (subNoteIds.isNotEmpty()) {
+                        TextButton(onClick = {
+                            confirm("Delete all ${subNoteIds.size} sub-note(s) in this note, with their attachments and reminders?") {
+                                removeSubNoteLinks(subNoteIds.toSet())
+                            }
+                        }) { Text("Delete all") }
+                    }
                     if (subNoteIds.size > 1) {
                         TextButton(onClick = {
                             subSelectMode = !subSelectMode
