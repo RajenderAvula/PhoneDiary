@@ -54,6 +54,7 @@ import com.example.phonediary.files.EmailBackupHelper
 import com.example.phonediary.files.FileAttachmentHelper
 import com.example.phonediary.files.LocationOpenHelper
 import com.example.phonediary.files.LocationPinHelper
+import com.example.phonediary.files.NoteSaver
 import com.example.phonediary.files.NoteShareHelper
 import com.example.phonediary.files.RestoreHelper
 import com.example.phonediary.files.SavedAttachment
@@ -62,7 +63,6 @@ import com.example.phonediary.files.SubNoteManager
 import com.example.phonediary.files.UsageCleanup
 import com.example.phonediary.files.VideoCaptureHelper
 import com.example.phonediary.reminders.GeofenceHelper
-import com.example.phonediary.reminders.GeofenceStatusStore
 import com.example.phonediary.reminders.NoteReminderScheduler
 import com.example.phonediary.usage.UsageStatsCollector
 import kotlinx.coroutines.launch
@@ -128,7 +128,6 @@ fun DiaryScreen(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            // Compose tabs stay composed (hidden ones are clipped to 0 size) so their state survives.
             Box(
                 modifier = if (selectedTab == DiaryTab.HOME) Modifier.fillMaxSize() else Modifier.size(0.dp).clipToBounds()
             ) {
@@ -192,6 +191,7 @@ private fun HomeTabContent() {
     var selectedDate by remember { mutableStateOf<String?>(null) }
     var dayLogEntries by remember { mutableStateOf(listOf<LogEntry>()) }
 
+    // ---- Quick-add composer (the only place a note starts as typed text) ----
     var noteTitle by remember { mutableStateOf("") }
     var noteText by remember { mutableStateOf("") }
     var locationText by remember { mutableStateOf("") }
@@ -207,25 +207,11 @@ private fun HomeTabContent() {
     var repeatConfig by remember { mutableStateOf(RepeatConfig.NONE) }
     var showRepeatDialog by remember { mutableStateOf(false) }
 
-    // ---- Location-based reminders (geofences) for the main composer ----
     var mainLocationReminders by remember { mutableStateOf(listOf<LocationReminderItem>()) }
     var mainGeofenceStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     var mainGeofenceErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     var calendarStatus by remember { mutableStateOf<String?>(null) }
-
-    var editingEntryId by remember { mutableStateOf<Long?>(null) }
-    var editingTitle by remember { mutableStateOf("") }
-    var editingNoteText by remember { mutableStateOf("") }
-    var editingLocationText by remember { mutableStateOf("") }
-    var editingAttachments by remember { mutableStateOf(listOf<String>()) }
-    var editingReminderAtMillis by remember { mutableStateOf<Long?>(null) }
-    var editingDueAtMillis by remember { mutableStateOf<Long?>(null) }
-    var editingRepeatConfig by remember { mutableStateOf(RepeatConfig.NONE) }
-    var showEditRepeatDialog by remember { mutableStateOf(false) }
-    var editingLocationReminders by remember { mutableStateOf(listOf<LocationReminderItem>()) }
-    var editingGeofenceStatus by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
-    var editingGeofenceErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedEntryIds by remember { mutableStateOf(setOf<Long>()) }
@@ -237,9 +223,11 @@ private fun HomeTabContent() {
     var filterMode by remember { mutableStateOf(FilterMode.ALL) }
     var filteredResults by remember { mutableStateOf<List<LogEntry>>(emptyList()) }
 
+    // ---- Full-screen editor (every edit goes through it, and autosaves) ----
     var showFullScreenEditor by remember { mutableStateOf(false) }
     var fullScreenEditingEntryId by remember { mutableStateOf<Long?>(null) }
     var fullScreenHighlightQuery by remember { mutableStateOf<String?>(null) }
+    var freshNoteId by remember { mutableStateOf<Long?>(null) }   // created by ⛶; removed if closed empty
     var noteTags by remember { mutableStateOf(listOf<String>()) }
     var mainTagInput by remember { mutableStateOf("") }
 
@@ -249,6 +237,7 @@ private fun HomeTabContent() {
 
     var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
     var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
+    var confirmAction by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
 
     // ---- Tree / hierarchical view in the day list ----
     var treeShownIds by remember { mutableStateOf(setOf<Long>()) }
@@ -256,13 +245,13 @@ private fun HomeTabContent() {
     var treeRefresh by remember { mutableStateOf(0) }
     var locationNoteTarget by remember { mutableStateOf<Pair<LogEntry, LocationReminderItem>?>(null) }
 
-    // ---- OCR image scan (crop/border adjustment) ----
+    // ---- OCR image scan ----
     var scanImageUri by remember { mutableStateOf<Uri?>(null) }
     val scanImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri -> if (uri != null) scanImageUri = uri }
 
-    // ---- Speech: 🎤 online one-shot (toggleable) and 🎙️ offline-first (live partial) ----
+    // ---- Speech: 🎤 online one-shot, 🎙️ offline-first with live text ----
     val streamingSpeechHelper = remember { StreamingSpeechHelper(context) }
     var isOneShotListening by remember { mutableStateOf(false) }
     var oneShotError by remember { mutableStateOf<String?>(null) }
@@ -427,7 +416,6 @@ private fun HomeTabContent() {
     fun openDate(dateKey: String) {
         selectedDate = dateKey
         calendarStatus = null
-        editingEntryId = null
         selectionMode = false
         selectedEntryIds = emptySet()
         searchResults = null
@@ -543,9 +531,43 @@ private fun HomeTabContent() {
     }
 
     fun openNoteInFullScreen(entryId: Long, highlight: String? = null) {
+        freshNoteId = null
         fullScreenEditingEntryId = entryId
         fullScreenHighlightQuery = highlight
         showFullScreenEditor = true
+    }
+
+    /** Creates the note immediately (moving whatever is in the quick-add box into it) and opens it. */
+    fun openNewNoteFullScreen() {
+        scope.launch {
+            val dao = AppDatabase.getInstance(context).logEntryDao()
+            val now = System.currentTimeMillis()
+            val ts = selectedCalendarDateTimeMillis ?: now
+            val key = selectedDate ?: SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(now)
+            val id = dao.insert(
+                LogEntry(
+                    timestampMillis = ts,
+                    dateKey = key,
+                    source = "manual_note",
+                    title = noteTitle.ifBlank { null },
+                    note = noteText.ifBlank { null },
+                    locationUrl = locationText.ifBlank { null },
+                    attachmentFileName = AttachmentListUtil.toStored(pendingAttachments.map { it.name }),
+                    reminderAtMillis = reminderAtMillis,
+                    dueAtMillis = dueAtMillis,
+                    repeatRule = if (repeatConfig.type != "NONE") repeatConfig.toStored() else null,
+                    lastModifiedMillis = ts,
+                    tags = TagListUtil.toStored(noteTags),
+                    locationReminders = LocationReminderListUtil.toStored(mainLocationReminders)
+                )
+            )
+            dao.getById(id)?.let { if (!NoteSaver.isEmpty(it)) NoteSaver.armAll(context, it) }
+            resetMainEntryFields()
+            refreshDates()
+            openDate(key)
+            openNoteInFullScreen(id)
+            freshNoteId = id
+        }
     }
 
     LaunchedEffect(Unit) { refreshDates(); loadAllTags() }
@@ -678,6 +700,10 @@ private fun HomeTabContent() {
 
         // ---- 3. Add note ----
         Text("Add a note for today", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Tap ⛶ to create the note and edit it with automatic saving.",
+            style = MaterialTheme.typography.labelSmall
+        )
 
         selectedCalendarDateTimeMillis?.let { picked ->
             Text(
@@ -714,11 +740,7 @@ private fun HomeTabContent() {
                 Text(if (isStreamingListening) "🔴" else "🎙️")
             }
             IconButton(onClick = { scanImagePickerLauncher.launch("image/*") }) { Text("📷") }
-            IconButton(onClick = {
-                fullScreenEditingEntryId = null
-                fullScreenHighlightQuery = null
-                showFullScreenEditor = true
-            }) { Text("⛶") }
+            IconButton(onClick = { openNewNoteFullScreen() }) { Text("⛶") }
         }
 
         if (isStreamingListening || streamingPartialText.isNotBlank()) {
@@ -744,7 +766,7 @@ private fun HomeTabContent() {
             Row(modifier = Modifier.fillMaxWidth()) {
                 noteTags.forEach { tag ->
                     AssistChip(
-                        onClick = { noteTags = noteTags.filterNot { it == tag } },
+                        onClick = { confirmAction = "Remove the tag #$tag?" to { noteTags = noteTags.filterNot { it == tag } } },
                         label = { Text("#$tag ✕") },
                         modifier = Modifier.padding(end = 4.dp)
                     )
@@ -808,7 +830,9 @@ private fun HomeTabContent() {
             }
             if (reminderAtMillis != null) {
                 Spacer(Modifier.width(6.dp))
-                OutlinedButton(onClick = { reminderAtMillis = null }) { Text("✕") }
+                OutlinedButton(onClick = {
+                    confirmAction = "Remove this reminder?" to { reminderAtMillis = null }
+                }) { Text("✕") }
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -821,7 +845,9 @@ private fun HomeTabContent() {
             }
             if (dueAtMillis != null) {
                 Spacer(Modifier.width(6.dp))
-                OutlinedButton(onClick = { dueAtMillis = null }) { Text("✕") }
+                OutlinedButton(onClick = {
+                    confirmAction = "Remove the due date?" to { dueAtMillis = null }
+                }) { Text("✕") }
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -834,7 +860,9 @@ private fun HomeTabContent() {
             }
             if (repeatConfig.type != "NONE") {
                 Spacer(Modifier.width(6.dp))
-                OutlinedButton(onClick = { repeatConfig = RepeatConfig.NONE }) { Text("✕") }
+                OutlinedButton(onClick = {
+                    confirmAction = "Remove the repeat?" to { repeatConfig = RepeatConfig.NONE }
+                }) { Text("✕") }
             }
         }
         if (showRepeatDialog) {
@@ -852,8 +880,7 @@ private fun HomeTabContent() {
             registrationStatus = mainGeofenceStatus,
             registrationError = mainGeofenceErrors,
             onToggle = { item ->
-                // The note has no id until it's saved, so there's nothing to
-                // register against yet — just clear any stale status.
+                // The note has no id until it's saved, so just clear any stale status.
                 mainGeofenceStatus = mainGeofenceStatus - item.id
                 mainGeofenceErrors = mainGeofenceErrors - item.id
             }
@@ -879,8 +906,10 @@ private fun HomeTabContent() {
                     name = attachment.name,
                     uri = attachment.uri,
                     onRemove = {
-                        pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name }
-                        AttachmentCleanup.launchDeleteIfUnreferenced(context, listOf(attachment.name))
+                        confirmAction = "Remove this attachment? Its file is deleted if no note uses it." to {
+                            pendingAttachments = pendingAttachments.filterNot { it.name == attachment.name }
+                            AttachmentCleanup.launchDeleteIfUnreferenced(context, listOf(attachment.name))
+                        }
                     }
                 )
             }
@@ -913,17 +942,8 @@ private fun HomeTabContent() {
                                 locationReminders = LocationReminderListUtil.toStored(mainLocationReminders)
                             )
                         )
-                        reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
-                        dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, newId, it) }
-                        if (repeatConfig.type != "NONE") {
-                            RepeatScheduling.firstTrigger(repeatConfig.toStored())?.let {
-                                NoteReminderScheduler.scheduleRepeat(context, newId, it)
-                            }
-                        }
-                        GeofenceHelper.syncGeofencesForEntry(context, newId, mainLocationReminders)
-
                         AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
-                            CalendarWriter.refreshEntry(context, it)
+                            NoteSaver.armAll(context, it)
                         }
 
                         resetMainEntryFields()
@@ -935,11 +955,12 @@ private fun HomeTabContent() {
             }) { Text("Save entry") }
             Spacer(Modifier.width(8.dp))
             OutlinedButton(onClick = {
-                AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
-                // Sub-notes created inside this draft's location notes are saved already — remove them.
-                SubNoteManager.launchDeleteWithCascade(context, SubNoteManager.idsInItems(mainLocationReminders))
-                resetMainEntryFields()
-            }) { Text("Cancel") }
+                confirmAction = "Discard what you typed? Attached files are deleted if no note uses them." to {
+                    AttachmentCleanup.launchDeleteIfUnreferenced(context, pendingAttachments.map { it.name })
+                    SubNoteManager.launchDeleteWithCascade(context, SubNoteManager.idsInItems(mainLocationReminders))
+                    resetMainEntryFields()
+                }
+            }) { Text("Discard") }
         }
 
         // ---- 4. Day details ----
@@ -998,291 +1019,98 @@ private fun HomeTabContent() {
                     }
                     val titledLabel = entry.title?.takeIf { it.isNotBlank() }?.let { "$it — $displayLabel" } ?: displayLabel
 
-                    if (editingEntryId == entry.id) {
-                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                            OutlinedTextField(
-                                value = editingTitle,
-                                onValueChange = { editingTitle = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                placeholder = { Text("Note title") },
-                                singleLine = true
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            OutlinedTextField(
-                                value = editingNoteText,
-                                onValueChange = { editingNoteText = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                placeholder = { Text("Note") },
-                                minLines = 1,
-                                maxLines = 6
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedTextField(
-                                    value = editingLocationText,
-                                    onValueChange = { editingLocationText = it },
-                                    modifier = Modifier.weight(1f),
-                                    placeholder = { Text("Location URL") },
-                                    singleLine = true
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                IconButton(onClick = { pinCurrentLocation { url -> editingLocationText = url } }) { Text("📍") }
-                                if (editingLocationText.isNotBlank()) {
-                                    IconButton(onClick = { LocationOpenHelper.open(context, editingLocationText) }) { Text("🔗") }
-                                }
-                            }
-                            Spacer(Modifier.height(6.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedButton(
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { DateTimePickerUtil.pick(context) { picked -> editingReminderAtMillis = picked } }
-                                ) {
-                                    Text(editingReminderAtMillis?.let { "⏰ ${dateTimeFormat.format(it)}" } ?: "⏰ Reminder")
-                                }
-                                if (editingReminderAtMillis != null) {
-                                    Spacer(Modifier.width(6.dp))
-                                    OutlinedButton(onClick = { editingReminderAtMillis = null }) { Text("✕") }
-                                }
-                            }
-                            Spacer(Modifier.height(6.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedButton(
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { DateTimePickerUtil.pick(context) { picked -> editingDueAtMillis = picked } }
-                                ) {
-                                    Text(editingDueAtMillis?.let { "📅 ${dateTimeFormat.format(it)}" } ?: "📅 Due date")
-                                }
-                                if (editingDueAtMillis != null) {
-                                    Spacer(Modifier.width(6.dp))
-                                    OutlinedButton(onClick = { editingDueAtMillis = null }) { Text("✕") }
-                                }
-                            }
-                            Spacer(Modifier.height(6.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedButton(
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { showEditRepeatDialog = true }
-                                ) {
-                                    Text(if (editingRepeatConfig.type != "NONE") "🔁 ${repeatDisplayLabel2(editingRepeatConfig.toStored())}" else "🔁 Repeat")
-                                }
-                                if (editingRepeatConfig.type != "NONE") {
-                                    Spacer(Modifier.width(6.dp))
-                                    OutlinedButton(onClick = { editingRepeatConfig = RepeatConfig.NONE }) { Text("✕") }
-                                }
-                            }
-                            if (showEditRepeatDialog) {
-                                RepeatPickerDialog(
-                                    initial = editingRepeatConfig,
-                                    onConfirm = { config -> editingRepeatConfig = config; showEditRepeatDialog = false },
-                                    onDismiss = { showEditRepeatDialog = false }
-                                )
-                            }
-                            Spacer(Modifier.height(6.dp))
-                            LocationReminderSection(
-                                items = editingLocationReminders,
-                                onItemsChanged = { editingLocationReminders = it },
-                                registrationStatus = editingGeofenceStatus,
-                                registrationError = editingGeofenceErrors,
-                                onToggle = { item ->
-                                    if (item.enabled) {
-                                        GeofenceHelper.registerGeofence(context, entry.id, item) { success, error ->
-                                            editingGeofenceStatus = editingGeofenceStatus + (item.id to success)
-                                            editingGeofenceErrors = if (error != null) {
-                                                editingGeofenceErrors + (item.id to error)
-                                            } else {
-                                                editingGeofenceErrors - item.id
-                                            }
-                                        }
-                                    } else {
-                                        GeofenceHelper.removeGeofence(context, entry.id, item.id)
-                                        editingGeofenceStatus = editingGeofenceStatus - item.id
-                                        editingGeofenceErrors = editingGeofenceErrors - item.id
-                                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        if (selectionMode) {
+                            Checkbox(
+                                checked = entry.id in selectedEntryIds,
+                                onCheckedChange = { checked ->
+                                    selectedEntryIds = if (checked) selectedEntryIds + entry.id else selectedEntryIds - entry.id
                                 }
                             )
-                            Spacer(Modifier.height(4.dp))
-                            Text("Attachments:", style = MaterialTheme.typography.bodySmall)
-                            if (editingAttachments.isEmpty()) {
-                                Text("None", style = MaterialTheme.typography.bodySmall)
-                            } else {
-                                editingAttachments.forEach { name ->
-                                    ResolvingAttachmentPreview(
-                                        name = name,
-                                        onRemove = { editingAttachments = editingAttachments.filterNot { it == name } }
-                                    )
-                                }
-                            }
-                            Row {
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        val updated = entry.copy(
-                                            title = editingTitle.ifBlank { null },
-                                            note = editingNoteText.ifBlank { null },
-                                            locationUrl = editingLocationText.ifBlank { null },
-                                            attachmentFileName = AttachmentListUtil.toStored(editingAttachments),
-                                            reminderAtMillis = editingReminderAtMillis,
-                                            dueAtMillis = editingDueAtMillis,
-                                            repeatRule = if (editingRepeatConfig.type != "NONE") editingRepeatConfig.toStored() else null,
-                                            locationReminders = LocationReminderListUtil.toStored(editingLocationReminders),
-                                            lastModifiedMillis = System.currentTimeMillis()
-                                        )
-                                        AppDatabase.getInstance(context).logEntryDao().update(updated)
-                                        AttachmentCleanup.deleteIfUnreferenced(
-                                            context,
-                                            AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated)
-                                        )
-                                        SubNoteManager.deleteRemovedBetween(context, entry, updated)
-                                        NoteReminderScheduler.cancelReminder(context, entry.id)
-                                        NoteReminderScheduler.cancelDue(context, entry.id)
-                                        NoteReminderScheduler.cancelRepeat(context, entry.id)
-                                        editingReminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, entry.id, it) }
-                                        editingDueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, entry.id, it) }
-                                        if (editingRepeatConfig.type != "NONE") {
-                                            RepeatScheduling.firstTrigger(editingRepeatConfig.toStored())?.let {
-                                                NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
-                                            }
-                                        }
-                                        // Remove geofences for any location the user deleted with ✕.
-                                        val previousItems = LocationReminderListUtil.fromStored(entry.locationReminders)
-                                        val remainingIds = editingLocationReminders.map { it.id }.toSet()
-                                        val removedItems = previousItems.filter { it.id !in remainingIds }
-                                        GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, removedItems)
-
-                                        GeofenceHelper.syncGeofencesForEntry(context, entry.id, editingLocationReminders) { itemId, success, error ->
-                                            editingGeofenceStatus = editingGeofenceStatus + (itemId to success)
-                                            editingGeofenceErrors = if (error != null) {
-                                                editingGeofenceErrors + (itemId to error)
-                                            } else {
-                                                editingGeofenceErrors - itemId
-                                            }
-                                        }
-                                        CalendarWriter.refreshEntry(context, updated)
-                                        treeRefresh++
-                                        editingEntryId = null
-                                        openDate(date)
-                                    }
-                                }) { Text("Save") }
-                                TextButton(onClick = {
-                                    SubNoteManager.launchDeleteWithCascade(
-                                        context,
-                                        SubNoteManager.idsInItems(editingLocationReminders) - SubNoteManager.idsInEntry(entry)
-                                    )
-                                    editingEntryId = null
-                                }) { Text("Cancel") }
-                            }
                         }
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            if (selectionMode) {
-                                Checkbox(
-                                    checked = entry.id in selectedEntryIds,
-                                    onCheckedChange = { checked ->
-                                        selectedEntryIds = if (checked) selectedEntryIds + entry.id else selectedEntryIds - entry.id
-                                    }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Every row (note, usage, screen log) can open its tree.
+                                val treeOpen = entry.id in treeShownIds
+                                Text(
+                                    (if (treeOpen) "▾ " else "▸ ") + "$time  •  $titledLabel",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f).then(
+                                        if (!selectionMode) Modifier.clickable {
+                                            treeShownIds = if (treeOpen) treeShownIds - entry.id else treeShownIds + entry.id
+                                        } else Modifier
+                                    )
+                                )
+                                if (!selectionMode) {
+                                    TextButton(onClick = { openNoteInFullScreen(entry.id) }) { Text("⛶") }
+                                    TextButton(onClick = { openNoteInFullScreen(entry.id) }) { Text("Edit") }
+                                    TextButton(onClick = { NoteShareHelper.shareNote(context, entry) }) { Text("📤") }
+                                    TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
+                                }
+                            }
+                            entry.locationUrl?.let {
+                                Text(
+                                    "📍 $it",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.clickable { LocationOpenHelper.open(context, it) }
                                 )
                             }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Every row (note, usage, screen log) can open its tree.
-                                    val isTreeable = true
-                                    val treeOpen = entry.id in treeShownIds
-                                    Text(
-                                        (if (isTreeable) (if (treeOpen) "▾ " else "▸ ") else "") + "$time  •  $titledLabel",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.weight(1f).then(
-                                            if (isTreeable && !selectionMode) Modifier.clickable {
-                                                treeShownIds = if (treeOpen) treeShownIds - entry.id else treeShownIds + entry.id
-                                            } else Modifier
-                                        )
-                                    )
-                                    if (!selectionMode) {
-                                        TextButton(onClick = { openNoteInFullScreen(entry.id) }) { Text("⛶") }
-                                        TextButton(onClick = {
-                                            editingEntryId = entry.id
-                                            editingTitle = entry.title ?: ""
-                                            editingNoteText = entry.note ?: ""
-                                            editingLocationText = entry.locationUrl ?: ""
-                                            editingAttachments = AttachmentListUtil.toList(entry.attachmentFileName).distinct()
-                                            editingReminderAtMillis = entry.reminderAtMillis
-                                            editingDueAtMillis = entry.dueAtMillis
-                                            editingRepeatConfig = RepeatConfig.fromStored(entry.repeatRule)
-                                            val locItems = LocationReminderListUtil.fromStored(entry.locationReminders)
-                                            editingLocationReminders = locItems
-                                            editingGeofenceStatus = locItems.mapNotNull { item ->
-                                                GeofenceStatusStore.getStatus(context, entry.id, item.id)?.let { item.id to it }
-                                            }.toMap()
-                                            editingGeofenceErrors = locItems.mapNotNull { item ->
-                                                GeofenceStatusStore.getError(context, entry.id, item.id)?.let { item.id to it }
-                                            }.toMap()
-                                        }) { Text("Edit") }
-                                        TextButton(onClick = { NoteShareHelper.shareNote(context, entry) }) { Text("📤") }
-                                        TextButton(onClick = { confirmDeleteEntry = entry }) { Text("Delete") }
-                                    }
-                                }
-                                entry.locationUrl?.let {
-                                    Text(
-                                        "📍 $it",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.clickable { LocationOpenHelper.open(context, it) }
-                                    )
-                                }
-                                val entryTagList = TagListUtil.toList(entry.tags)
-                                if (entryTagList.isNotEmpty()) {
-                                    Text(entryTagList.joinToString(" ") { "#$it" }, style = MaterialTheme.typography.bodySmall)
-                                }
-                                entry.reminderAtMillis?.let {
-                                    Text("⏰ ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall)
-                                }
-                                entry.dueAtMillis?.let { Text("📅 Due ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall) }
-                                entry.repeatRule?.takeIf { it != "NONE" }?.let {
-                                    Text("🔁 ${repeatDisplayLabel2(it)}", style = MaterialTheme.typography.bodySmall)
-                                }
-                                val entryLocReminders = LocationReminderListUtil.fromStored(entry.locationReminders)
-                                if (entryLocReminders.isNotEmpty()) {
-                                    val enabledCount = entryLocReminders.count { it.enabled }
-                                    Text(
-                                        "📍🔔 ${entryLocReminders.size} location reminder(s), $enabledCount on",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                                AttachmentListUtil.toList(entry.attachmentFileName).distinct().forEach { name ->
-                                    ResolvingAttachmentPreview(name = name)
-                                }
-                                if (entry.id in treeShownIds) {
-                                    NoteTreeView(
-                                        entry = entry,
-                                        refreshKey = treeRefresh,
-                                        collapsed = collapsedNodeKeys,
-                                        onToggleBranch = { k ->
-                                            collapsedNodeKeys = if (k in collapsedNodeKeys) collapsedNodeKeys - k else collapsedNodeKeys + k
-                                        },
-                                        onOpen = { node ->
-                                            if (node.kind == NodeKind.INFO) {
-                                                // read-only detail line
-                                            } else if (node.kind == NodeKind.SUB_NOTE) {
-                                                node.entryId?.let { openNoteInFullScreen(it) }
-                                            } else {
-                                                scope.launch {
-                                                    val parent = AppDatabase.getInstance(context).logEntryDao()
-                                                        .getById(node.parentEntryId ?: -1L)
-                                                    val item = parent?.let {
-                                                        LocationReminderListUtil.fromStored(it.locationReminders)
-                                                            .firstOrNull { i -> i.id == node.locationId }
-                                                    }
-                                                    if (parent != null && item != null) locationNoteTarget = parent to item
+                            val entryTagList = TagListUtil.toList(entry.tags)
+                            if (entryTagList.isNotEmpty()) {
+                                Text(entryTagList.joinToString(" ") { "#$it" }, style = MaterialTheme.typography.bodySmall)
+                            }
+                            entry.reminderAtMillis?.let {
+                                Text("⏰ ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            entry.dueAtMillis?.let { Text("📅 Due ${dateTimeFormat.format(it)}", style = MaterialTheme.typography.bodySmall) }
+                            entry.repeatRule?.takeIf { it != "NONE" }?.let {
+                                Text("🔁 ${repeatDisplayLabel2(it)}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            val entryLocReminders = LocationReminderListUtil.fromStored(entry.locationReminders)
+                            if (entryLocReminders.isNotEmpty()) {
+                                val enabledCount = entryLocReminders.count { it.enabled }
+                                Text(
+                                    "📍🔔 ${entryLocReminders.size} location reminder(s), $enabledCount on",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            AttachmentListUtil.toList(entry.attachmentFileName).distinct().forEach { name ->
+                                ResolvingAttachmentPreview(name = name)
+                            }
+                            if (entry.id in treeShownIds) {
+                                NoteTreeView(
+                                    entry = entry,
+                                    refreshKey = treeRefresh,
+                                    collapsed = collapsedNodeKeys,
+                                    onToggleBranch = { k ->
+                                        collapsedNodeKeys = if (k in collapsedNodeKeys) collapsedNodeKeys - k else collapsedNodeKeys + k
+                                    },
+                                    onOpen = { node ->
+                                        if (node.kind == NodeKind.INFO) {
+                                            // read-only detail line
+                                        } else if (node.kind == NodeKind.SUB_NOTE) {
+                                            node.entryId?.let { openNoteInFullScreen(it) }
+                                        } else {
+                                            scope.launch {
+                                                val parent = AppDatabase.getInstance(context).logEntryDao()
+                                                    .getById(node.parentEntryId ?: -1L)
+                                                val item = parent?.let {
+                                                    LocationReminderListUtil.fromStored(it.locationReminders)
+                                                        .firstOrNull { i -> i.id == node.locationId }
                                                 }
+                                                if (parent != null && item != null) locationNoteTarget = parent to item
                                             }
                                         }
-                                    )
-                                }
+                                    }
+                                )
                             }
                         }
                     }
@@ -1306,10 +1134,10 @@ private fun HomeTabContent() {
         }
     }
 
-    // ---- Location note opened from the tree: saves straight back into its parent row ----
+    // ---- Location note opened from the tree: autosaves straight into its parent row ----
     locationNoteTarget?.let { (parent, item) ->
         Dialog(
-            onDismissRequest = { locationNoteTarget = null },
+            onDismissRequest = { locationNoteTarget = null; treeRefresh++ },
             properties = DialogProperties(
                 usePlatformDefaultWidth = false,
                 dismissOnBackPress = true,
@@ -1329,7 +1157,7 @@ private fun HomeTabContent() {
                     initialNoteDateTimeMillis = null,
                     isLocationNote = true,
                     locationNoteName = item.label,
-                    onSave = { r ->
+                    onAutoSave = { r ->
                         scope.launch {
                             val dao = AppDatabase.getInstance(context).logEntryDao()
                             val latest = dao.getById(parent.id) ?: return@launch
@@ -1343,22 +1171,25 @@ private fun HomeTabContent() {
                             )
                             val items = LocationReminderListUtil.fromStored(latest.locationReminders)
                                 .map { if (it.id == item.id) newItem else it }
-                            val updated = latest.copy(
-                                locationReminders = LocationReminderListUtil.toStored(items),
-                                lastModifiedMillis = System.currentTimeMillis()
+                            NoteSaver.update(
+                                context, latest,
+                                FullScreenNoteResult(
+                                    title = latest.title.orEmpty(),
+                                    text = latest.note.orEmpty(),
+                                    locationUrl = latest.locationUrl.orEmpty(),
+                                    tags = AttachmentListUtil.toList(latest.tags),
+                                    existingAttachmentNames = AttachmentListUtil.toList(latest.attachmentFileName),
+                                    newAttachments = emptyList(),
+                                    reminderAtMillis = latest.reminderAtMillis,
+                                    dueAtMillis = latest.dueAtMillis,
+                                    repeatRule = latest.repeatRule ?: "NONE",
+                                    noteDateTimeMillis = null,
+                                    locationReminders = items
+                                )
                             )
-                            dao.update(updated)
-                            AttachmentCleanup.deleteIfUnreferenced(
-                                context, AttachmentCleanup.namesOf(latest) - AttachmentCleanup.namesOf(updated)
-                            )
-                            SubNoteManager.deleteRemovedBetween(context, latest, updated)
-                            if (newItem.enabled && newItem.repeatRule != item.repeatRule) {
-                                GeofenceHelper.registerGeofence(context, parent.id, newItem)
-                            }
-                            treeRefresh++
-                            locationNoteTarget = null
                         }
                     },
+                    onSave = { locationNoteTarget = null; treeRefresh++ },
                     onCancel = { locationNoteTarget = null; treeRefresh++ }
                 )
             }
@@ -1367,7 +1198,7 @@ private fun HomeTabContent() {
 
     confirmDeleteEntry?.let { entry ->
         ConfirmDeleteDialog(
-            message = "Delete this entry? This cannot be undone.",
+            message = "Delete this entry, including its sub-notes, attachments and reminders? This cannot be undone.",
             onConfirm = {
                 selectedDate?.let { performDeleteEntry(entry, it) }
                 confirmDeleteEntry = null
@@ -1388,139 +1219,52 @@ private fun HomeTabContent() {
         )
     }
 
-    if (showFullScreenEditor) {
-        val editingId = fullScreenEditingEntryId
+    confirmAction?.let { (message, action) ->
+        ConfirmDeleteDialog(
+            message = message,
+            onConfirm = { confirmAction = null; action() },
+            onDismiss = { confirmAction = null }
+        )
+    }
+
+    // ---- The full-screen editor: every change is saved as you go ----
+    val editingId = fullScreenEditingEntryId
+    if (showFullScreenEditor && editingId != null) {
         var loadedEntry by remember(editingId) { mutableStateOf<LogEntry?>(null) }
-        var isLoaded by remember(editingId) { mutableStateOf(editingId == null) }
 
         LaunchedEffect(editingId) {
-            if (editingId != null) {
-                loadedEntry = AppDatabase.getInstance(context).logEntryDao().getById(editingId)
-                isLoaded = true
-            }
+            loadedEntry = AppDatabase.getInstance(context).logEntryDao().getById(editingId)
         }
 
-        if (isLoaded) {
-            val initialTitle = if (editingId == null) noteTitle else (loadedEntry?.title ?: "")
-            val initialText = if (editingId == null) noteText else (loadedEntry?.note ?: "")
-            val initialLocation = if (editingId == null) locationText else (loadedEntry?.locationUrl ?: "")
-            val initialTags = if (editingId == null) noteTags else TagListUtil.toList(loadedEntry?.tags)
-            val initialAttachments = if (editingId == null) emptyList() else AttachmentListUtil.toList(loadedEntry?.attachmentFileName).distinct()
-            val initialReminder = if (editingId == null) reminderAtMillis else loadedEntry?.reminderAtMillis
-            val initialDue = if (editingId == null) dueAtMillis else loadedEntry?.dueAtMillis
-            val initialRepeat = if (editingId == null) repeatConfig.toStored() else (loadedEntry?.repeatRule ?: "NONE")
-            val initialNoteDateTime = if (editingId == null) selectedCalendarDateTimeMillis else loadedEntry?.timestampMillis
-            val initialLocReminders = if (editingId == null) mainLocationReminders else LocationReminderListUtil.fromStored(loadedEntry?.locationReminders)
-
+        val entry = loadedEntry
+        if (entry != null) {
             FullScreenNoteEditor(
-                initialTitle = initialTitle,
-                initialText = initialText,
-                initialLocationUrl = initialLocation,
-                initialTags = initialTags,
-                initialAttachmentNames = initialAttachments,
-                initialReminderAtMillis = initialReminder,
-                initialDueAtMillis = initialDue,
-                initialRepeatRule = initialRepeat,
-                initialNoteDateTimeMillis = initialNoteDateTime,
-                initialLocationReminders = initialLocReminders,
-                existingEntryId = editingId,
-                isSubNote = loadedEntry?.source == SubNoteManager.SOURCE,
-                highlightQuery = if (editingId != null) fullScreenHighlightQuery else null,
+                initialTitle = entry.title ?: "",
+                initialText = entry.note ?: "",
+                initialLocationUrl = entry.locationUrl ?: "",
+                initialTags = TagListUtil.toList(entry.tags),
+                initialAttachmentNames = AttachmentListUtil.toList(entry.attachmentFileName).distinct(),
+                initialReminderAtMillis = entry.reminderAtMillis,
+                initialDueAtMillis = entry.dueAtMillis,
+                initialRepeatRule = entry.repeatRule ?: "NONE",
+                initialNoteDateTimeMillis = entry.timestampMillis,
+                initialLocationReminders = LocationReminderListUtil.fromStored(entry.locationReminders),
+                existingEntryId = entry.id,
+                isSubNote = entry.source == SubNoteManager.SOURCE,
+                highlightQuery = fullScreenHighlightQuery,
+                onAutoSave = { result ->
+                    scope.launch { NoteSaver.update(context, entry, result) }
+                },
                 onSave = { result ->
-                    if (editingId == null) {
-                        // Save immediately — same behavior as the main "Save entry" button.
-                        if (result.title.isNotBlank() || result.text.isNotBlank() || result.locationUrl.isNotBlank() ||
-                            result.newAttachments.isNotEmpty() || pendingAttachments.isNotEmpty()
-                        ) {
-                            scope.launch {
-                                val nowMillis = System.currentTimeMillis()
-                                val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(nowMillis)
-                                val targetDateKey = selectedDate ?: todayKey
-                                val entryTimestamp = result.noteDateTimeMillis ?: selectedCalendarDateTimeMillis ?: nowMillis
-                                val finalRepeatConfig = RepeatConfig.fromStored(result.repeatRule)
-                                val finalAttachments = (pendingAttachments + result.newAttachments).distinctBy { it.name }
-
-                                val newId = AppDatabase.getInstance(context).logEntryDao().insert(
-                                    LogEntry(
-                                        timestampMillis = entryTimestamp,
-                                        dateKey = targetDateKey,
-                                        source = "manual_note",
-                                        title = result.title.ifBlank { null },
-                                        note = result.text.ifBlank { null },
-                                        locationUrl = result.locationUrl.ifBlank { null },
-                                        attachmentFileName = AttachmentListUtil.toStored(finalAttachments.map { it.name }),
-                                        reminderAtMillis = result.reminderAtMillis,
-                                        dueAtMillis = result.dueAtMillis,
-                                        repeatRule = if (finalRepeatConfig.type != "NONE") finalRepeatConfig.toStored() else null,
-                                        lastModifiedMillis = entryTimestamp,
-                                        tags = TagListUtil.toStored(result.tags),
-                                        locationReminders = LocationReminderListUtil.toStored(result.locationReminders)
-                                    )
-                                )
-                                result.reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, newId, it) }
-                                result.dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, newId, it) }
-                                if (finalRepeatConfig.type != "NONE") {
-                                    RepeatScheduling.firstTrigger(finalRepeatConfig.toStored())?.let {
-                                        NoteReminderScheduler.scheduleRepeat(context, newId, it)
-                                    }
-                                }
-                                GeofenceHelper.syncGeofencesForEntry(context, newId, result.locationReminders)
-
-                                AppDatabase.getInstance(context).logEntryDao().getById(newId)?.let {
-                                    CalendarWriter.refreshEntry(context, it)
-                                }
-
-                                resetMainEntryFields()
-                                refreshDates()
-                                loadAllTags()
-                                openDate(targetDateKey)
-                            }
-                        }
-                    } else {
-                        scope.launch {
-                            loadedEntry?.let { entry ->
-                                val finalAttachments = (result.existingAttachmentNames + result.newAttachments.map { it.name }).distinct()
-                                val updated = entry.copy(
-                                    title = result.title.ifBlank { null },
-                                    note = result.text.ifBlank { null },
-                                    locationUrl = result.locationUrl.ifBlank { null },
-                                    tags = TagListUtil.toStored(result.tags),
-                                    attachmentFileName = AttachmentListUtil.toStored(finalAttachments),
-                                    reminderAtMillis = result.reminderAtMillis,
-                                    dueAtMillis = result.dueAtMillis,
-                                    repeatRule = result.repeatRule,
-                                    locationReminders = LocationReminderListUtil.toStored(result.locationReminders),
-                                    timestampMillis = result.noteDateTimeMillis ?: entry.timestampMillis,
-                                    lastModifiedMillis = System.currentTimeMillis()
-                                )
-                                AppDatabase.getInstance(context).logEntryDao().update(updated)
-                                AttachmentCleanup.deleteIfUnreferenced(
-                                    context,
-                                    AttachmentCleanup.namesOf(entry) - AttachmentCleanup.namesOf(updated)
-                                )
-                                NoteReminderScheduler.cancelReminder(context, entry.id)
-                                NoteReminderScheduler.cancelDue(context, entry.id)
-                                NoteReminderScheduler.cancelRepeat(context, entry.id)
-                                result.reminderAtMillis?.let { NoteReminderScheduler.scheduleReminder(context, entry.id, it) }
-                                result.dueAtMillis?.let { NoteReminderScheduler.scheduleDue(context, entry.id, it) }
-                                if (result.repeatRule != "NONE") {
-                                    RepeatScheduling.firstTrigger(result.repeatRule)?.let {
-                                        NoteReminderScheduler.scheduleRepeat(context, entry.id, it)
-                                    }
-                                }
-                                // Remove geofences for any location the user deleted with ✕.
-                                val previousItems = LocationReminderListUtil.fromStored(entry.locationReminders)
-                                val remainingIds = result.locationReminders.map { it.id }.toSet()
-                                val removedItems = previousItems.filter { it.id !in remainingIds }
-                                GeofenceHelper.removeAllGeofencesForEntry(context, entry.id, removedItems)
-
-                                GeofenceHelper.syncGeofencesForEntry(context, entry.id, result.locationReminders)
-                                CalendarWriter.refreshEntry(context, updated)
-                                loadAllTags()
-                                selectedDate?.let { openDate(it) }
-                                treeRefresh++
-                            }
-                        }
+                    scope.launch {
+                        NoteSaver.update(context, entry, result)
+                        // Only a note created by ⛶ and left completely empty is removed.
+                        if (freshNoteId == entry.id) NoteSaver.deleteIfEmpty(context, entry.id)
+                        freshNoteId = null
+                        refreshDates()
+                        loadAllTags()
+                        selectedDate?.let { openDate(it) }
+                        treeRefresh++
                     }
                     showFullScreenEditor = false
                     fullScreenHighlightQuery = null
@@ -1616,6 +1360,7 @@ private fun CalendarMonthView(
         }
     }
 }
+
 @Composable
 private fun SettingsPanel(
     context: Context,
@@ -1657,6 +1402,8 @@ private fun SettingsPanel(
             am.canScheduleExactAlarms()
         } else true
     }
+
+    var confirmAction by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
 
     var backupStatus by remember { mutableStateOf<String?>(null) }
     var isBackingUp by remember { mutableStateOf(false) }
@@ -1713,8 +1460,10 @@ private fun SettingsPanel(
                 }) { Text("Share") }
                 Spacer(Modifier.width(8.dp))
                 TextButton(onClick = {
-                    CrashLogger.clearLastCrash(context)
-                    refreshTick++
+                    confirmAction = "Clear the saved crash log?" to {
+                        CrashLogger.clearLastCrash(context)
+                        refreshTick++
+                    }
                 }) { Text("Clear") }
             }
         }
@@ -1800,17 +1549,21 @@ private fun SettingsPanel(
         Text("Cleanup", style = MaterialTheme.typography.titleSmall)
 
         OutlinedButton(onClick = {
-            scope.launch {
-                val n = CalendarWriter.refreshAll(context)
-                cleanupStatus = "Updated $n calendar event(s)"
+            confirmAction = "Rewrite your calendar events and remove leftover usage events?" to {
+                scope.launch {
+                    val n = CalendarWriter.refreshAll(context)
+                    cleanupStatus = "Updated $n calendar event(s)"
+                }
             }
         }) { Text("Fix all calendar events") }
 
         OutlinedButton(onClick = {
-            scope.launch {
-                val removed = UsageCleanup.run(context)
-                val events = CalendarWriter.refreshAll(context)
-                cleanupStatus = "Removed $removed duplicate usage row(s); tidied $events calendar event(s)"
+            confirmAction = "Delete duplicate usage and screen-log rows? Rows you added notes to are kept." to {
+                scope.launch {
+                    val removed = UsageCleanup.run(context)
+                    val events = CalendarWriter.refreshAll(context)
+                    cleanupStatus = "Removed $removed duplicate usage row(s); tidied $events calendar event(s)"
+                }
             }
         }) { Text("Clean up usage clutter") }
 
@@ -1839,7 +1592,7 @@ private fun SettingsPanel(
         unusedFiles?.let { files ->
             ConfirmDeleteDialog(
                 message = "${files.size} file(s) in Downloads/PhoneDiary aren't used by any note. " +
-                    "Save or cancel any note you have open first. Delete them?",
+                    "Close any note you have open first. Delete them?",
                 onConfirm = {
                     unusedFiles = null
                     scope.launch {
@@ -1853,7 +1606,7 @@ private fun SettingsPanel(
 
         orphanSubNotes?.let { n ->
             ConfirmDeleteDialog(
-                message = "$n sub-note(s) aren't linked from any note. Save or cancel any note you have open first. Delete them?",
+                message = "$n sub-note(s) aren't linked from any note. Close any note you have open first. Delete them?",
                 onConfirm = {
                     orphanSubNotes = null
                     scope.launch {
@@ -1901,10 +1654,12 @@ private fun SettingsPanel(
             Spacer(Modifier.width(8.dp))
             if (keyHint != null) {
                 OutlinedButton(onClick = {
-                    GeminiKeyStore.clear(context)
-                    GeminiModelStore.clear(context)
-                    modelList = emptyList()
-                    geminiKeyTick++
+                    confirmAction = "Remove the Gemini API key from this phone?" to {
+                        GeminiKeyStore.clear(context)
+                        GeminiModelStore.clear(context)
+                        modelList = emptyList()
+                        geminiKeyTick++
+                    }
                 }) { Text("Remove key") }
             }
         }
@@ -2083,7 +1838,9 @@ private fun SettingsPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(pkg, style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { onRemoveBlocked(pkg) }) { Text("Remove") }
+                TextButton(onClick = {
+                    confirmAction = "Stop blocking $pkg? It will be logged again." to { onRemoveBlocked(pkg) }
+                }) { Text("Remove") }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2095,6 +1852,14 @@ private fun SettingsPanel(
             )
             Spacer(Modifier.width(8.dp))
             Button(onClick = onAddBlocked) { Text("Block") }
+        }
+
+        confirmAction?.let { (message, action) ->
+            ConfirmDeleteDialog(
+                message = message,
+                onConfirm = { confirmAction = null; action() },
+                onDismiss = { confirmAction = null }
+            )
         }
     }
 }
