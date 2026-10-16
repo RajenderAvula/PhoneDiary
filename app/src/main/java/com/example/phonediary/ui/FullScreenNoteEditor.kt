@@ -99,6 +99,8 @@ fun FullScreenNoteEditor(
     isSubNote: Boolean = false,
     /** The levels above this note, outermost first. Empty for a main note. */
     parentPath: List<String> = emptyList(),
+    /** Identity for the switcher; location notes pass (owner id, location id). */
+    selfTarget: NoteTarget? = null,
     highlightQuery: String? = null,
    // onAutoSave: (FullScreenNoteResult) -> Unit = {},
     /** When set, a "Delete this note" button appears (sub-notes and location notes). */
@@ -108,6 +110,8 @@ fun FullScreenNoteEditor(
     onCancel: () -> Unit
 ) {
     val context = LocalContext.current
+    val navigator = LocalNoteNavigator.current
+    val self = selfTarget ?: existingEntryId?.takeIf { !isLocationNote }?.let { NoteTarget(it) }
     val scope = rememberCoroutineScope()
     val dateTimeFormat = remember { SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault()) }
     val audioRecorder = remember { AudioRecorderHelper(context) }
@@ -600,6 +604,13 @@ fun FullScreenNoteEditor(
                             attachmentNames = existingAttachmentNames + newAttachments.map { it.name }
                         )
                     }) { Text("🖨") }
+                   // TextButton(onClick = { finish() }) { Text("Done") }
+                   if (navigator != null) {
+                        TextButton(onClick = { navigator.openSwitcher(self) }) { Text("⇄") }
+                        if (self != null) {
+                            TextButton(onClick = { navigator.minimize(self) }) { Text("▁") }
+                        }
+                    }
                     TextButton(onClick = { finish() }) { Text("Done") }
                 }
             )
@@ -954,6 +965,7 @@ fun FullScreenNoteEditor(
             if (!isLocationNote) {
                 Spacer(Modifier.height(12.dp))
                 LocationReminderSection(
+                    ownerEntryId = existingEntryId,
                     items = locationReminders,
                     onItemsChanged = { locationReminders = it },
                    // registrationStatus = geofenceStatus,
