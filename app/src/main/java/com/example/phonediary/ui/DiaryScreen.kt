@@ -73,6 +73,8 @@ import java.util.Calendar
 import java.util.Locale
 import com.example.phonediary.files.NotePathResolver
 import com.example.phonediary.files.NoteTreeOps
+import androidx.compose.runtime.CompositionLocalProvider
+import kotlinx.coroutines.delay
 
 private enum class DiaryTab { HOME, ASK, SEARCH, SETTINGS }
 private enum class FilterMode { ALL, REMINDERS, DUE_DATES }
@@ -240,6 +242,12 @@ private fun HomeTabContent() {
     var confirmDeleteEntry by remember { mutableStateOf<LogEntry?>(null) }
     var confirmDeleteSelectedForDate by remember { mutableStateOf<String?>(null) }
     var confirmAction by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+    var tray by remember { mutableStateOf(listOf<NoteTarget>()) }
+    var trayNotice by remember { mutableStateOf<String?>(null) }
+    var showSwitcher by remember { mutableStateOf(false) }
+    var switcherSelf by remember { mutableStateOf<NoteTarget?>(null) }
+    var showBrowse by remember { mutableStateOf(false) }
+    var referenceTarget by remember { mutableStateOf<NoteTarget?>(null) }
 
     // ---- Tree / hierarchical view in the day list ----
     var treeShownIds by remember { mutableStateOf(setOf<Long>()) }
@@ -538,6 +546,65 @@ private fun HomeTabContent() {
         fullScreenHighlightQuery = highlight
         showFullScreenEditor = true
     }
+    fun closeAllEditors() {
+        showFullScreenEditor = false
+        locationNoteTarget = null
+        fullScreenHighlightQuery = null
+    }
+
+    fun openTarget(t: NoteTarget) {
+        scope.launch {
+            val e = AppDatabase.getInstance(context).logEntryDao().getById(t.entryId)
+            if (e == null) {
+                trayNotice = "That note no longer exists"
+                tray = tray.filterNot { it.key == t.key }
+                return@launch
+            }
+            if (t.locationId == null) {
+                openNoteInFullScreen(t.entryId)
+            } else {
+                val item = LocationReminderListUtil.fromStored(e.locationReminders).firstOrNull { it.id == t.locationId }
+                if (item == null) {
+                    trayNotice = "That location note no longer exists"
+                    tray = tray.filterNot { it.key == t.key }
+                } else {
+                    locationNoteTarget = e to item
+                }
+            }
+        }
+    }
+
+    /** Parks [self] and opens [t]. The pause lets the last autosave finish before editors close. */
+    fun switchTo(self: NoteTarget?, t: NoteTarget) {
+        if (self != null && self.key == t.key) return
+        scope.launch {
+            trayNotice = null
+            self?.let { s -> if (tray.none { it.key == s.key }) tray = tray + s }
+            tray = tray.filterNot { it.key == t.key }
+            delay(850)
+            closeAllEditors()
+            delay(250)
+            openTarget(t)
+        }
+    }
+
+    fun minimizeNote(self: NoteTarget?) {
+        scope.launch {
+            self?.let { s -> if (tray.none { it.key == s.key }) tray = tray + s }
+            delay(850)
+            closeAllEditors()
+            treeRefresh++
+            refreshDates()
+            selectedDate?.let { openDate(it) }
+        }
+    }
+
+    val navigator = remember {
+        object : NoteNavigator {
+            override fun openSwitcher(self: NoteTarget?) { switcherSelf = self; showSwitcher = true }
+            override fun minimize(self: NoteTarget?) { minimizeNote(self) }
+        }
+    }
 
     /** Creates the note immediately (moving whatever is in the quick-add box into it) and opens it. */
     fun openNewNoteFullScreen() {
@@ -579,6 +646,15 @@ private fun HomeTabContent() {
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
+        NoteTrayRow(
+            tray = tray,
+            notice = trayNotice,
+            onDismissNotice = { trayNotice = null },
+            onOpen = { t -> switchTo(null, t) },
+            onRemove = { t -> tray = tray.filterNot { it.key == t.key } },
+            onBrowse = { switcherSelf = null; showBrowse = true }
+        )
+        Divider()
 
         // ---- 1. Search ----
         Text("Search", style = MaterialTheme.typography.titleMedium)
@@ -1153,6 +1229,8 @@ private fun HomeTabContent() {
             calendarStatus?.let { status -> Text(status, style = MaterialTheme.typography.bodySmall) }
         }
     }
+CompositionLocalProvider(LocalNoteNavigator provides navigator) {
+        // ...the existing block, unchanged...
 
     // ---- Location note opened from the tree: autosaves straight into its parent row ----
     locationNoteTarget?.let { (parent, item) ->
@@ -1181,6 +1259,7 @@ private fun HomeTabContent() {
                    // locationNoteName = item.label,
                     isLocationNote = true,
                     locationNoteName = item.label,
+                    selfTarget = NoteTarget(parent.id, item.id),
                   //  parentPath = listOf("📝 " + (parent.title?.trim()?.takeIf { it.isNotEmpty() } ?: "Untitled note")),
                     parentPath = locParentPath,
                     onDeleteSelf = {
@@ -1228,6 +1307,7 @@ private fun HomeTabContent() {
             }
         }
     }
+}
 
     confirmDeleteEntry?.let { entry ->
         ConfirmDeleteDialog(
@@ -1253,7 +1333,30 @@ private fun HomeTabContent() {
             onDismiss = { confirmDeleteSelectedForDate = null }
         )
     }
-
+if (showSwitcher) {
+        NoteSwitcherDialog(
+            tray = tray,
+            onOpen = { t -> showSwitcher = false; switchTo(switcherSelf, t) },
+            onRemove = { t -> tray = tray.filterNot { it.key == t.key } },
+            onBrowse = { showSwitcher = false; showBrowse = true },
+            onDismiss = { showSwitcher = false }
+        )
+    }
+    if (showBrowse) {
+        BrowseNotesDialog(
+            initialDate = selectedDate,
+            onView = { referenceTarget = it },
+            onEdit = { t -> showBrowse = false; switchTo(switcherSelf, t) },
+            onDismiss = { showBrowse = false }
+        )
+    }
+    referenceTarget?.let { t ->
+        ReferenceViewerDialog(
+            initial = t,
+            onEdit = { target -> referenceTarget = null; showBrowse = false; switchTo(switcherSelf, target) },
+            onDismiss = { referenceTarget = null }
+        )
+    }
     confirmAction?.let { (message, action) ->
         ConfirmDeleteDialog(
             message = message,
@@ -1261,6 +1364,8 @@ private fun HomeTabContent() {
             onDismiss = { confirmAction = null }
         )
     }
+CompositionLocalProvider(LocalNoteNavigator provides navigator) {
+        // ...the existing block, unchanged...
 
     // ---- The full-screen editor: every change is saved as you go ----
     val editingId = fullScreenEditingEntryId
@@ -1342,6 +1447,7 @@ private fun HomeTabContent() {
             onDismiss = { scanImageUri = null }
         )
     }
+}
 }
 
 @Composable
