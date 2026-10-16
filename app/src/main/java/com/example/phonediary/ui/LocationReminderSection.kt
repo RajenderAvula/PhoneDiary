@@ -50,6 +50,7 @@ fun LocationReminderSection(
     onItemsChanged: (List<LocationReminderItem>) -> Unit,
    // registrationStatus: Map<String, Boolean> = emptyMap(),
     parentPath: List<String> = emptyList(),
+    ownerEntryId: Long? = null,
     registrationStatus: Map<String, Boolean> = emptyMap(),
     registrationError: Map<String, String> = emptyMap(),
     onToggle: ((LocationReminderItem) -> Unit)? = null
@@ -288,6 +289,7 @@ fun LocationReminderSection(
                         initialNoteDateTimeMillis = null,
                        // isLocationNote = true,
                         isLocationNote = true,
+                        selfTarget = ownerEntryId?.let { NoteTarget(it, item.id) },
                         parentPath = parentPath,
                         locationNoteName = item.label,
                        // onAutoSave = { result -> applyNote(item.id, result) },
